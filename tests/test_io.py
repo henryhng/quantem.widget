@@ -912,6 +912,110 @@ def test_real_arina_to_show4dstem():
 
 
 # =========================================================================
+# IO.arina_folder — skip, dry_run, virtual_only
+# =========================================================================
+
+ARINA_FIXTURE_DIR = os.path.join(
+    os.path.dirname(__file__), "data", "arina_fixture"
+)
+
+
+def test_arina_folder_single_file():
+    """arina_folder with one master file returns 4D (same as arina_file)."""
+    result = IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, backend="cpu")
+    assert isinstance(result, IOResult)
+    # Single file → squeezed to 4D (not 5D with leading dim=1)
+    assert result.data.ndim in (3, 4)
+    assert result.title == "arina_fixture"
+
+
+def test_arina_folder_dry_run(capsys):
+    """dry_run prints memory table and returns None."""
+    result = IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, dry_run=True)
+    assert result is None
+    captured = capsys.readouterr()
+    assert "test_arina_master.h5" in captured.out
+    assert "Total:" in captured.out
+    assert "GB" in captured.out
+
+
+def test_arina_folder_dry_run_with_det_bin(capsys):
+    """dry_run shows binned detector dimensions."""
+    IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=2, dry_run=True)
+    captured = capsys.readouterr()
+    assert "12x" in captured.out  # 24//2 = 12
+
+
+def test_arina_folder_skip_all_raises():
+    """skip >= n_files raises ValueError."""
+    with pytest.raises(ValueError, match="skip=10"):
+        IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, skip=10)
+
+
+def test_arina_folder_skip_within_range():
+    """skip=0 loads the file, skip=1 raises (only 1 file)."""
+    result = IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, skip=0, backend="cpu")
+    assert result is not None
+    with pytest.raises(ValueError, match="skip=1"):
+        IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, skip=1)
+
+
+def test_arina_folder_virtual_only():
+    """virtual_only returns BF/ADF/HAADF images, discards 4D."""
+    result = IO.arina_folder(
+        ARINA_FIXTURE_DIR, virtual_only=True, backend="cpu",
+        scan_shape=(4, 4),
+    )
+    assert isinstance(result, IOResult)
+    # 1 file × 3 modes = 3 images, each 4×4
+    assert result.data.shape == (3, 4, 4)
+    assert len(result.labels) == 3
+    assert "BF" in result.labels[0]
+    assert "ADF" in result.labels[1]
+    assert "HAADF" in result.labels[2]
+
+
+def test_arina_folder_virtual_only_labels():
+    """virtual_only labels follow pattern: 'stem BF', 'stem ADF', 'stem HAADF'."""
+    result = IO.arina_folder(
+        ARINA_FIXTURE_DIR, virtual_only=True, backend="cpu",
+        scan_shape=(4, 4),
+    )
+    for label in result.labels:
+        parts = label.split()
+        assert parts[-1] in ("BF", "ADF", "HAADF")
+
+
+def test_arina_folder_virtual_only_memory_tiny():
+    """virtual_only output is much smaller than full 4D."""
+    result_vi = IO.arina_folder(
+        ARINA_FIXTURE_DIR, virtual_only=True, backend="cpu",
+        scan_shape=(4, 4),
+    )
+    result_full = IO.arina_folder(
+        ARINA_FIXTURE_DIR, det_bin=1, backend="cpu",
+    )
+    # VIs should be orders of magnitude smaller
+    assert result_vi.data.nbytes < result_full.data.nbytes
+
+
+def test_arina_folder_dry_run_scan_column(capsys):
+    """dry_run shows Scan column in output."""
+    IO.arina_folder(ARINA_FIXTURE_DIR, det_bin=1, dry_run=True)
+    captured = capsys.readouterr()
+    assert "Scan" in captured.out
+
+
+def test_arina_folder_dry_run_with_scan_shape(capsys):
+    """dry_run respects scan_shape for memory estimate."""
+    IO.arina_folder(
+        ARINA_FIXTURE_DIR, det_bin=1, dry_run=True, scan_shape=(4, 4),
+    )
+    captured = capsys.readouterr()
+    assert "4x4" in captured.out
+
+
+# =========================================================================
 # IO.benchmark()
 # =========================================================================
 

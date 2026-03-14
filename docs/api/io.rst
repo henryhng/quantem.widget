@@ -247,6 +247,46 @@ with ``IO.arina_file()``, and stacks them into a 5D dataset (time/tilt series).
    from quantem.widget import Show4DSTEM
    Show4DSTEM(result, frame_dim_label="Scan")
 
+Survey workflow
+^^^^^^^^^^^^^^^
+
+Screen all scans before committing to ptychography or SSB reconstruction:
+
+.. code-block:: python
+
+   from quantem.widget import IO, Show2D
+
+   # 1. Preview memory requirements (reads headers only, no decompression)
+   IO.arina_folder("/path/to/session/", det_bin=8, dry_run=True)
+   #  #  File                                  Frames  Detector  Binned    Memory
+   # ------------------------------------------------------------------------------------
+   #  1  scan_001_master.h5                     65536  192x 192  24x  24  0.14 GB
+   #  2  scan_002_master.h5                     65536  192x 192  24x  24  0.14 GB
+   # ...
+   # Total: 10 files, 1.40 GB (det_bin=8)
+
+   # 2. Quick BF/ADF/HAADF survey (~0.75 MB/file instead of ~150 MB)
+   survey = IO.arina_folder("/path/to/session/", virtual_only=True)
+   Show2D(survey, title="BF / ADF / HAADF", log_scale=True)
+
+   # 3. Deep dive into specific scans
+   result = IO.arina_folder("/path/to/session/", det_bin=4, skip=3, max_files=2)
+   Show4DSTEM(result, frame_dim_label="Scan")
+
+**Parameters for survey workflow:**
+
+- ``dry_run=True`` — print a table of files, detector shapes, and estimated memory
+  without loading any data. Returns ``None``.
+- ``virtual_only=True`` — load each file at full detector resolution, auto-detect
+  the BF disk center and radius, compute BF/ADF/HAADF virtual images, and discard
+  the 4D data immediately. Returns an IOResult with shape
+  ``(n_files * 3, scan_rows, scan_cols)`` and interleaved labels
+  (``"file1 BF"``, ``"file1 ADF"``, ``"file1 HAADF"``, ...).
+  Ignores ``det_bin`` (always uses full-resolution detector for accurate masking).
+- ``skip=N`` — skip the first N files (after sorting and pattern filtering, before
+  ``max_files``). Useful for resuming: ``skip=10, max_files=10`` loads files 11–20.
+- All parameters compose: find → ``pattern`` filter → ``skip`` → ``max_files`` → load.
+
 Benchmarked on 12 Arina scans (65,536 frames each, 192×192 uint32 detector, Apple M5).
 2 incomplete files auto-skipped, 10 loaded:
 

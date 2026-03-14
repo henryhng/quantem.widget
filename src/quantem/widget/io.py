@@ -1565,7 +1565,10 @@ class IO:
         recursive: bool = False,
         pattern: str | None = None,
         shape: "tuple[int, int] | None" = None,
-    ) -> IOResult:
+        skip: int = 0,
+        dry_run: bool = False,
+        virtual_only: bool = False,
+    ) -> "IOResult | None":
         """Load arina master files from one or more folders into a 5D stack.
 
         Finds every ``*_master.h5``, loads each with :meth:`IO.arina_file`,
@@ -1588,13 +1591,29 @@ class IO:
         shape : tuple of (int, int), optional
             Only include scans whose scan dimensions match ``(scan_rows, scan_cols)``.
             Scans with different scan resolutions are skipped with a message.
+        skip : int, default 0
+            Skip the first N files. Applied after sorting and pattern filtering
+            but before max_files. E.g. ``skip=5, max_files=5`` loads files 6–10.
+        dry_run : bool, default False
+            If True, print a summary of what would be loaded (filenames,
+            detector shape, estimated memory per file and total) without
+            actually loading any data. Returns None.
+        virtual_only : bool, default False
+            If True, compute BF/ADF/HAADF virtual images from each scan
+            and discard the full 4D data. Uses the full-resolution detector
+            (ignores ``det_bin``). Returns 3 images per file interleaved
+            as ``(n_files * 3, scan_rows, scan_cols)`` with labels
+            ``["file1 BF", "file1 ADF", "file1 HAADF", ...]``.
+            Memory is ~0.75 MB per file instead of ~150 MB–9 GB.
 
         Returns
         -------
-        IOResult
+        IOResult or None
             ``.data`` has shape ``(n_files, scan_rows, scan_cols, det_rows, det_cols)``
             (5D) when each file produces 4D output. ``.labels`` contains the
-            stem of each master file.
+            stem of each master file. Returns None when ``dry_run=True``.
+            When ``virtual_only=True``, ``.data`` has shape
+            ``(n_files * 3, scan_rows, scan_cols)``.
 
         Examples
         --------
@@ -1619,6 +1638,14 @@ class IO:
         Search subdirectories:
 
         >>> result = IO.arina_folder("/data/", recursive=True, pattern="focal", det_bin=4)
+
+        Preview what would be loaded without reading data:
+
+        >>> IO.arina_folder("/data/", det_bin=8, dry_run=True)
+
+        Skip first 5 files and load the next 5:
+
+        >>> result = IO.arina_folder("/data/", det_bin=8, skip=5, max_files=5)
 
         Free GPU memory when done (important for large datasets):
 
@@ -1648,6 +1675,14 @@ class IO:
             masters = IO._collect_masters(folder, recursive=recursive, pattern=pattern)
             title = folder.name
 
+        # --- Apply skip ---
+        if skip > 0:
+            if skip >= len(masters):
+                raise ValueError(
+                    f"skip={skip} but only {len(masters)} master files found"
+                )
+            masters = masters[skip:]
+
         # --- Apply max_files cap ---
         if max_files > 0 and len(masters) > max_files:
             print(
@@ -1662,6 +1697,112 @@ class IO:
         det_bin, backend = IO._resolve_arina_args(
             det_bin, backend, master_path=str(masters[0])
         )
+
+        # --- Dry run: estimate memory without loading ---
+        if dry_run:
+            total_bytes = 0
+            print(f"{'#':>3}  {'File':<45} {'Scan':>10}  {'Detector':>10}  {'Binned':>10}  {'Memory':>8}")
+            print("-" * 100)
+            for i, mp in enumerate(masters):
+                try:
+                    n_frames, det_r, det_c, dtype = _parse_arina_info(str(mp))
+                except Exception as exc:
+                    print(f"{i+1:>3}  {mp.name:<45} ERROR: {exc}")
+                    continue
+                out_r, out_c = det_r // det_bin, det_c // det_bin
+                if scan_shape is not None:
+                    scan_r, scan_c = scan_shape
+                else:
+                    scan_r = scan_c = int(n_frames**0.5)
+                    if scan_r * scan_c != n_frames:
+                        # Non-square: show raw frame count
+                        scan_r, scan_c = n_frames, 1
+                per_file = scan_r * scan_c * out_r * out_c * 4
+                total_bytes += per_file
+                scan_str = f"{scan_r}x{scan_c}" if scan_c > 1 else f"{scan_r}"
+                print(
+                    f"{i+1:>3}  {mp.name:<45} {scan_str:>10}  "
+                    f"{det_r}x{det_c:>4}  {out_r}x{out_c:>4}  "
+                    f"{per_file / 1024**3:.2f} GB"
+                )
+            print("-" * 100)
+            print(
+                f"Total: {len(masters)} files, {total_bytes / 1024**3:.2f} GB "
+                f"(det_bin={det_bin})"
+            )
+            return None
+
+        # --- virtual_only: compute BF/ADF/HAADF, discard 4D ---
+        if virtual_only:
+            from quantem.widget.detector import detect_bf_disk, make_virtual_masks
+
+            vi_labels: list[str] = []
+            vi_list: list[np.ndarray] = []
+            frame_meta_vi: list[dict] = []
+            skipped_vi: list[str] = []
+            master_iter = enumerate(masters)
+            if len(masters) > 1:
+                master_iter = tqdm(
+                    master_iter, total=len(masters), desc="virtual images",
+                )
+            for i, mp in master_iter:
+                # Try det_bin=1 first, fall back to 2→4→8 on memory error
+                data = None
+                metadata = None
+                for fallback_bin in (1, 2, 4, 8):
+                    try:
+                        r = IO._arina_single(
+                            str(mp),
+                            det_bin=fallback_bin,
+                            scan_bin=scan_bin,
+                            scan_shape=scan_shape,
+                            hot_pixel_filter=hot_pixel_filter,
+                            backend=backend,
+                        )
+                        data = r.data
+                        metadata = r.metadata
+                        del r
+                        break
+                    except MemoryError:
+                        if fallback_bin < 8:
+                            tqdm.write(
+                                f"  {mp.name}: det_bin={fallback_bin} OOM, "
+                                f"retrying with det_bin={fallback_bin * 2}"
+                            )
+                        continue
+                    except (FileNotFoundError, ValueError, OSError) as exc:
+                        skipped_vi.append(mp.name)
+                        tqdm.write(f"  SKIPPED {mp.name}: {exc}")
+                        break
+                if data is None:
+                    if mp.name not in skipped_vi:
+                        skipped_vi.append(mp.name)
+                        tqdm.write(f"  SKIPPED {mp.name}: OOM even at det_bin=8")
+                    continue
+                # Detect BF disk per file (beam may shift between scans)
+                center_row, center_col, bf_radius = detect_bf_disk(data)
+                bf_mask, adf_mask, haadf_mask = make_virtual_masks(
+                    data.shape[-2], data.shape[-1],
+                    center_row, center_col, bf_radius,
+                )
+                bf = (data * bf_mask).mean(axis=(-2, -1))
+                adf = (data * adf_mask).mean(axis=(-2, -1))
+                haadf = (data * haadf_mask).mean(axis=(-2, -1))
+                stem = mp.stem.replace("_master", "")
+                vi_list.extend([bf, adf, haadf])
+                vi_labels.extend([f"{stem} BF", f"{stem} ADF", f"{stem} HAADF"])
+                frame_meta_vi.append(metadata)
+                del data
+            if skipped_vi:
+                tqdm.write(f"Skipped {len(skipped_vi)}/{len(masters)} files: {skipped_vi}")
+            if not vi_list:
+                raise ValueError(f"All {len(masters)} master files failed to load")
+            gallery = np.stack(vi_list)
+            return IOResult(
+                data=gallery, title=title, labels=vi_labels,
+                frame_metadata=frame_meta_vi,
+            )
+
         labels: list[str] = []
         frame_meta: list[dict] = []
         skipped: list[str] = []
