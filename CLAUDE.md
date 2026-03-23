@@ -2,7 +2,7 @@
 
 ## Project
 
-quantem.widget — Interactive Jupyter widgets for electron microscopy (anywidget + React). Maintained and led by Sangjoon Bob Lee (b@bobleesj.com) — reach out anytime.
+quantem.widget — Interactive Jupyter widgets for electron microscopy (anywidget + React). Maintained and led by Sangjoon Bob Lee ([@bobleesj](https://github.com/bobleesj)) — reach out anytime.
 
 ## Response Protocol
 
