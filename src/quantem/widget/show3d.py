@@ -132,6 +132,10 @@ class Show3D(anywidget.AnyWidget):
     cmap = traitlets.Unicode("magma").tag(sync=True)
     dim_label = traitlets.Unicode("Frame").tag(sync=True)
 
+    # Multi-Panel (synchronized side-by-side stacks)
+    n_panels = traitlets.Int(1).tag(sync=True)
+    panel_titles = traitlets.List(traitlets.Unicode()).tag(sync=True)
+
     # =========================================================================
     # Playback Controls
     # =========================================================================
@@ -316,8 +320,9 @@ class Show3D(anywidget.AnyWidget):
 
     def __init__(
         self,
-        data,
+        *data_args,
         labels: list[str] | None = None,
+        panel_titles: list[str] | None = None,
         title: str = "",
         cmap: str | Colormap = Colormap.MAGMA,
         vmin: float | None = None,
@@ -387,6 +392,22 @@ class Show3D(anywidget.AnyWidget):
                 )
             )
 
+        # ── Parse data args: single or multi-panel ──
+        # Show3D(data) → single panel
+        # Show3D(data1, data2, ...) → multi-panel (side-by-side, synced)
+        if len(data_args) == 0:
+            raise TypeError("Show3D requires at least one data argument")
+
+        # Flatten: Show3D([data1, data2]) also works for multi-panel
+        if (len(data_args) == 1 and isinstance(data_args[0], (list, tuple))
+                and len(data_args[0]) > 0 and not isinstance(data_args[0][0], (int, float))):
+            # Check if it's a list of arrays vs a single array
+            first = data_args[0][0]
+            if hasattr(first, 'ndim') or isinstance(first, np.ndarray):
+                data_args = tuple(data_args[0])
+
+        data = data_args[0]
+
         # Check if data is an IOResult and extract metadata
         if isinstance(data, IOResult):
             if not title and data.title:
@@ -405,10 +426,8 @@ class Show3D(anywidget.AnyWidget):
         _extracted_pixel_size = None
         if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
             _extracted_title = data.name if data.name else None
-            # sampling is (z_sampling, y_sampling, x_sampling) - use y/x for pixel size
             if hasattr(data, "sampling") and len(data.sampling) >= 3:
                 sampling_val = float(data.sampling[1])
-                # pixel_size is in Å — convert if units are nm
                 if hasattr(data, "units"):
                     units = list(data.units)
                     if units[1] in ("nm", "nanometer"):
@@ -416,12 +435,63 @@ class Show3D(anywidget.AnyWidget):
                 _extracted_pixel_size = sampling_val
             data = data.array
 
-        # Convert input to NumPy (handles NumPy, CuPy, PyTorch)
+        # Convert first panel to NumPy
         data = to_numpy(data)
-
-        # Ensure 3D
+        if data.ndim == 2:
+            data = data[None, ...]
         if data.ndim != 3:
             raise ValueError(f"Expected 3D array, got {data.ndim}D")
+
+        # Multi-panel: convert remaining args, validate shapes, concatenate
+        if len(data_args) > 1:
+            panels = [data.astype(np.float32)]
+            for i, extra in enumerate(data_args[1:], 1):
+                if isinstance(extra, IOResult):
+                    extra = extra.data
+                if hasattr(extra, "array"):
+                    extra = extra.array
+                arr = to_numpy(extra)
+                if arr.ndim == 2:
+                    arr = arr[None, ...]
+                if arr.ndim != 3:
+                    raise ValueError(f"Panel {i}: expected 3D array, got {arr.ndim}D")
+                if arr.shape[0] != panels[0].shape[0]:
+                    raise ValueError(
+                        f"Panel {i} has {arr.shape[0]} frames, but panel 0 has "
+                        f"{panels[0].shape[0]} frames. All panels must match."
+                    )
+                panels.append(arr.astype(np.float32))
+            self.n_panels = len(panels)
+            if panel_titles is not None:
+                self.panel_titles = list(panel_titles)
+            else:
+                self.panel_titles = [f"Panel {i+1}" for i in range(len(panels))]
+            # Normalize each panel independently to [0, 1] so they share
+            # the same contrast range in the viewer
+            normalized = []
+            for p in panels:
+                p2, p98 = np.percentile(p, [2, 98])
+                rng = p98 - p2
+                if rng < 1e-10:
+                    rng = 1.0
+                normalized.append(np.clip((p - p2) / rng, 0, 1).astype(np.float32))
+            # Concatenate horizontally with 2px black separator (matches canvas bg)
+            sep_w = 2
+            sep = np.zeros(
+                (normalized[0].shape[0], normalized[0].shape[1], sep_w),
+                dtype=np.float32,
+            )
+            parts = []
+            for j, p in enumerate(normalized):
+                if j > 0:
+                    parts.append(sep)
+                parts.append(p)
+            data = np.concatenate(parts, axis=2)
+            self._panel_width = panels[0].shape[2]
+        else:
+            self.n_panels = 1
+            if panel_titles is not None:
+                self.panel_titles = list(panel_titles)
 
         # Store data as float32 numpy array
         self._data = data.astype(np.float32)

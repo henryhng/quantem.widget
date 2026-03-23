@@ -712,6 +712,8 @@ function Show3D() {
   const [labels] = useModelState<string[]>("labels");
   const [title] = useModelState<string>("title");
   const [dimLabel] = useModelState<string>("dim_label");
+  const [nPanels] = useModelState<number>("n_panels");
+  const [panelTitles] = useModelState<string[]>("panel_titles");
   const [cmap, setCmap] = useModelState<string>("cmap");
 
   // Playback
@@ -1479,7 +1481,7 @@ function Show3D() {
         ctx.fill();
       }
     }
-  }, [roiActive, roiItems, roiSelectedIdx, isDraggingROI, canvasW, canvasH, displayScale, zoom, panX, panY, themeColors, profileActive, profilePoints, profileWidth, hideRoi, hideProfile]);
+  }, [roiActive, roiItems, roiSelectedIdx, isDraggingROI, canvasW, canvasH, displayScale, zoom, panX, panY, themeColors, profileActive, profilePoints, profileWidth, hideRoi, hideProfile, nPanels, panelTitles]);
 
   // Lens inset rendering
   React.useEffect(() => {
@@ -3348,6 +3350,16 @@ function Show3D() {
               />
             )}
           </Box>
+          {/* Multi-panel labels below canvas */}
+          {(nPanels || 1) > 1 && (panelTitles || []).length > 0 && (
+            <Box sx={{ display: "flex", width: canvasW, mt: 0.25 }}>
+              {(panelTitles || []).map((pt: string, pi: number) => (
+                <Typography key={pi} sx={{ flex: 1, fontSize: 10, textAlign: "center", color: themeColors.textMuted, fontFamily: "monospace" }}>
+                  {pt}
+                </Typography>
+              ))}
+            </Box>
+          )}
           {/* Statistics bar - right below the image */}
           {showStats && !hideStats && (
             <Box sx={{ mt: 0.5, px: 1, py: 0.5, bgcolor: themeColors.bgAlt, display: "flex", gap: 2, alignItems: "center", boxSizing: "border-box", opacity: lockStats ? 0.7 : 1 }}>

@@ -1,5 +1,13 @@
 # changelog
 
+## v0.0.15 (2026-03-22)
+
+### New widgets
+- **MetricExplorer** — interactive metric explorer for SSB aberration parameter sweeps: displays image quality metrics (variance loss, TV, FFT SNR) as grouped line charts across a parameter sweep, click any point to inspect the corresponding phase image with zoom/pan, FFT toggle, histogram contrast, and colormap selector; supports `x_key`/`group_key` for axis/grouping, `metric_filter` for outlier removal, `metric_directions` for best-point markers, state persistence, and tool lock/hide
+
+### Show3D
+- **multi-panel comparison** — `Show3D(data1, data2, data3, panel_titles=["BF", "ADF", "SSB"])` displays synchronized side-by-side stacks with shared playback, zoom/pan, and frame navigation; each panel is independently normalized to 2nd–98th percentile; also accepts `Show3D([data1, data2])` list syntax; all panels must have the same frame count
+
 ## v0.0.14 (2026-02-28)
 
 ### New widgets

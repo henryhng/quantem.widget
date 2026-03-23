@@ -57,6 +57,10 @@
     "Show1D": {
       "tool_groups": ["display", "peaks", "stats", "export", "all"],
       "aliases": {}
+    },
+    "MetricExplorer": {
+      "tool_groups": ["display", "export", "all"],
+      "aliases": {}
     }
   },
   "viewer_widgets": ["Show1D", "Show2D", "Show3D", "Show3DVolume", "Show4D", "Show4DSTEM", "ShowComplex2D"],

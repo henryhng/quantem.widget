@@ -27,6 +27,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from quantem.widget.show3dvolume import Show3DVolume
     from quantem.widget.show4d import Show4D
     from quantem.widget.show4dstem import Show4DSTEM
+    from quantem.widget.show_metric_explorer import MetricExplorer
     from quantem.widget.showcomplex import ShowComplex2D
 
 
@@ -48,6 +49,7 @@ _EXPORTS = {
     "Show3DVolume": ("quantem.widget.show3dvolume", "Show3DVolume"),
     "Show4D": ("quantem.widget.show4d", "Show4D"),
     "Show4DSTEM": ("quantem.widget.show4dstem", "Show4DSTEM"),
+    "MetricExplorer": ("quantem.widget.show_metric_explorer", "MetricExplorer"),
     "ShowComplex2D": ("quantem.widget.showcomplex", "ShowComplex2D"),
     "profile": ("quantem.widget.profile", "profile"),
 }
@@ -85,5 +87,6 @@ __all__ = [
     "Show3DVolume",
     "Show4D",
     "Show4DSTEM",
+    "MetricExplorer",
     "ShowComplex2D",
 ]

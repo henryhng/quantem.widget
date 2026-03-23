@@ -29,6 +29,7 @@ def smoke_page(browser_context):
             "import pathlib\n",
             "from quantem.widget import Bin, Bin2D, Browse, Mark2D, Show1D, Show2D, Show3D, Show3DVolume, Show4DSTEM\n",
             "from quantem.widget import Show4D, Edit2D, Align2D, ShowComplex2D\n",
+            "from quantem.widget import MetricExplorer\n",
         ]},
         {"source": [
             "Show1D(np.random.rand(256).astype(np.float32), title='Show1D Smoke')\n",
@@ -70,6 +71,15 @@ def smoke_page(browser_context):
             "ShowComplex2D(np.random.rand(64, 64).astype(np.float32) + 1j * np.random.rand(64, 64).astype(np.float32))\n",
         ]},
         {"source": [
+            "_me_points = [\n",
+            "    {'image': np.random.rand(32, 32).astype(np.float32), 'label': f'P{i}',\n",
+            "     'metrics': {'variance_loss': float(np.random.rand()), 'fft_snr': float(np.random.rand())},\n",
+            "     'params': {'defocus': i * 10.0, 'group': 'A' if i < 3 else 'B'}}\n",
+            "    for i in range(6)\n",
+            "]\n",
+            "MetricExplorer(_me_points, x_key='defocus', x_label='Defocus (nm)', group_key='group')\n",
+        ]},
+        {"source": [
             "# Create temp dir with sample files for Browse\n",
             "_browse_dir = pathlib.Path('_browse_smoke_data')\n",
             "_browse_dir.mkdir(exist_ok=True)\n",
@@ -101,6 +111,7 @@ ALL_WIDGETS = [
     "edit2d-root",
     "align2d-root",
     "showcomplex-root",
+    "show-metric-explorer-root",
     "browse-root",
 ]
 
@@ -1456,6 +1467,28 @@ def test_showcomplex_roi_fft(smoke_page):
     time.sleep(0.5)
     widget.locator(".MuiSwitch-root").first.click()
     time.sleep(0.5)
+
+# ---------------------------------------------------------------------------
+# MetricExplorer interaction tests
+# ---------------------------------------------------------------------------
+
+def test_show_metric_explorer_renders(smoke_page):
+    """Verify MetricExplorer renders and capture screenshot."""
+    widget = smoke_page.locator(".show-metric-explorer-root").first
+    widget.scroll_into_view_if_needed()
+    time.sleep(1)
+    canvases = widget.locator("canvas")
+    assert canvases.count() >= 1, f"No canvas in MetricExplorer"
+    _screenshot(widget, "show_metric_explorer")
+
+def test_show_metric_explorer_dark(smoke_page):
+    """Screenshot MetricExplorer in dark theme."""
+    _set_dark_theme(smoke_page)
+    widget = smoke_page.locator(".show-metric-explorer-root").first
+    widget.scroll_into_view_if_needed()
+    time.sleep(1)
+    _screenshot(widget, "show_metric_explorer_dark")
+    _set_light_theme(smoke_page)
 
 # ---------------------------------------------------------------------------
 # Browse interaction tests
