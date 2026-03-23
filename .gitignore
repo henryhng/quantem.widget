@@ -20,7 +20,6 @@ src/quantem/widget/static
 .claude
 .agent
 Claude.md
-CLAUDE.md
 
 # Data files
 *.cif
