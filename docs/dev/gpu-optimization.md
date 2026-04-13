@@ -326,33 +326,122 @@ const bins = await engine.computeHistogramBatch(indices, ranges, logScale);
 Create `tests/gpu/test_mywidget.py` using the shared `tests/gpu/cdp.py`
 infrastructure. Register in `tests/gpu/run.py`.
 
-## Hardware Compatibility
+## Performance Reference
 
-| Hardware | GPU Memory | 12×4K Full-Res | 24×4K Auto-Bin | Notes |
-|----------|-----------|----------------|----------------|-------|
-| MacBook M5 24GB | Shared ~6GB | 100ms | 77ms (2K) | Tested |
-| MacBook M1/M2 8GB | Shared ~3GB | ~120ms | 77ms (2K) | Budget may need tuning |
-| NVIDIA 4GB (microscope) | 3.5GB dedicated | ~100ms | 77ms (2K) | Auto-bin kicks in at 12+ |
-| NVIDIA 8GB+ | 7GB+ dedicated | ~80ms | Full-res possible | More headroom |
-| No WebGPU (old browser) | N/A | CPU fallback | CPU fallback | ~580ms, still works |
+All numbers measured on **MacBook Pro M5, 24 GB RAM** with real 4096×4096
+STEM HAADF gold nanoparticle EMD data via Chrome CDP (not synthetic benchmarks).
+Data source: `20260409_gold_drift_v3/` — 12 Velox EMD files, 4096×4096 uint16.
+
+### Show2D (gallery viewer)
+
+```
+Show2D: 12 × 4096×4096 images (768 MB float32)
+
+Operation                     Before    After     Speedup
+─────────────────────────     ──────    ──────    ───────
+Colormap change (warm)        580ms     100ms     5.8×
+Log scale toggle              1049ms    112ms     9.4×
+Auto-contrast ON              768ms     272ms     2.8×
+Auto-contrast (cached)        768ms     4ms       192×
+Histogram slider drag         580ms     100ms     5.8×
+24 images                     OOM       77ms      ∞
+48 images                     CRASH     37ms      ∞
+```
+
+**Timing breakdown (12×4K colormap change, warm):**
+
+| Step | Time | Notes |
+|------|------|-------|
+| GPU compute (WGSL shader) | ~50ms | 201M pixels, includes 15ms API overhead |
+| mapAsync (GPU→CPU sync) | ~10ms | Apple unified memory, cache flush |
+| JS memcpy to ImageData | ~35ms | 768 MB at ~20 GB/s (hardware limit) |
+| putImageData to canvas | ~5ms | Browser internal |
+| **Total** | **~100ms** | 1.4× theoretical minimum (70ms) |
+
+**Show2D scaling (auto-bin):**
+
+| Images | Source | Display | GPU Memory | Colormap |
+|--------|--------|---------|------------|----------|
+| 12 | 4096×4096 | 4096×4096 (full) | 2.3 GB | 100ms |
+| 24 | 4096×4096 | 2048×2048 (bin 2×) | 1.2 GB | 77ms |
+| 48 | 4096×4096 | 1024×1024 (bin 4×) | 0.6 GB | 37ms |
+
+### Show3D (stack viewer)
+
+```
+Show3D: 12 frames × 4096×4096 (768 MB float32)
+
+                        Binned 2K         No-bin 4K
+                        (16 MB/frame)     (64 MB/frame)
+────────────────────    ──────────────    ──────────────
+Frame scrub (avg)       22ms              ~60ms
+Frame scrub (min)       5ms               ~30ms
+Colormap change         6-12ms            8-12ms
+Log toggle              5-8ms             7-8ms
+GPU compute             19ms              19ms (same)
+GPU → canvas copy       1ms               4ms
+Python trait sync       15ms              33ms
+```
+
+**Show3D scaling (frame count does NOT affect per-frame latency):**
+
+| Frames | Display | Frame Scrub | Colormap | Constructor |
+|--------|---------|-------------|----------|-------------|
+| 12 | 2048×2048 (bin 2×) | 22ms | 6ms | ~800ms |
+| 48 | 2048×2048 (bin 2×) | 22ms | 11ms | ~4.8s |
+| 96 | 2048×2048 (bin 2×) | 22ms | — | ~15s |
+
+**Show3D multi-panel (side-by-side comparison):**
+
+| Config | Display | Frame Scrub | Constructor |
+|--------|---------|-------------|-------------|
+| 2 panels × 12×4K | 1024×2050 (bin 4×) | 3ms | 698ms |
+| 3 panels × 12×4K | 1024×3076 (bin 4×) | 3ms | 1716ms |
+
+### Where the time goes
+
+For a single Show3D frame at 2K (the interactive path):
+
+```
+Python trait sync:  15ms  ┐
+JS parse Float32:    1ms  │  Framework overhead (can't reduce)
+                          │
+GPU compute:        19ms  ┤  WebGPU overhead: 15ms fence + 4ms shader
+GPU → canvas:        1ms  ┘  Actual shader: ~4ms for 4M pixels
+
+Total:              36ms → 28 fps
+```
+
+**Framework limits:**
+- Python→JS trait sync: ~0.5 ms per MB (traitlets/anywidget comm protocol)
+- WebGPU submission: ~15ms fixed overhead per `queue.submit()` (fence + validation)
+- JS typed array copy: ~20 GB/s (V8 engine limit)
+
+**To reach 60fps:** would require eliminating the per-frame trait sync by
+pre-uploading all frames to GPU storage buffers at init. Frame changes would
+then be a uniform update (~1ms) instead of a 15-33ms data transfer.
+
+### Hardware Compatibility
+
+| Hardware | GPU Memory | 12×4K Gallery | Show3D 4K | Notes |
+|----------|-----------|---------------|-----------|-------|
+| MacBook M5 24GB | Shared ~6GB | 100ms | 22ms/frame | All numbers above |
+| MacBook M1/M2 8GB | Shared ~3GB | ~120ms | ~25ms/frame | Budget may need tuning |
+| NVIDIA 4GB (microscope) | 3.5GB dedicated | ~100ms | ~22ms/frame | Auto-bin at 12+ images |
+| NVIDIA 8GB+ | 7GB+ dedicated | ~80ms | ~20ms/frame | More headroom |
+| No WebGPU (old browser) | N/A | CPU 580ms | CPU ~150ms | Still works, just slower |
 
 The auto-bin budget (`_GPU_DISPLAY_BUDGET_MB = 2500`) is conservative enough
 for 4GB NVIDIA GPUs. The `_gpu_max_buffer_mb` trait reports the GPU's actual
 limit from JS, which can be used for finer tuning in the future.
 
-## Results Summary
+### Auto-bin decision table
 
-```
-Operation (12×4K)       Before    After     Speedup
-─────────────────────   ──────    ──────    ───────
-Colormap change         580ms     100ms     5.8×
-Log scale toggle        1049ms    132ms     7.9×
-Auto-contrast ON        768ms     272ms     2.8×
-Auto-contrast (cached)  768ms     4ms       192×
-24 images               OOM       77ms      ∞
-48 images               CRASH     37ms      ∞
-Histogram slider drag   580ms     100ms     5.8×
-```
+| Widget | Condition | Bin Factor | Display Size |
+|--------|-----------|------------|--------------|
+| Show2D | Gallery GPU budget > 2.5 GB | 2×, 4×, 8× | Per image |
+| Show3D | Frame > 32 MB (> ~2800×2800) | 2×, 4×, 8× | Per frame |
+| Show3D multi-panel | Combined width × height × 4 > 32 MB | 2×, 4×, 8× | Per panel |
 
-All numbers measured on real 4096x4096 STEM HAADF EMD data via Chrome CDP,
-not synthetic benchmarks.
+Users can override with `display_bin=1` (force full-res) or `display_bin=N`
+(force specific factor). Default is `display_bin="auto"`.
