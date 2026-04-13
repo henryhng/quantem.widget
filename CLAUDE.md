@@ -101,6 +101,38 @@ Use the kernel matching your development conda env for notebooks.
 - **JS computation validation:** When implementing mathematical operations in JavaScript (FFT, windowing, statistics, coordinate transforms), always port the exact JS code to Python and validate against NumPy/SciPy/PyTorch ground truth in unit tests. Do not hardcode formulas separately — port the JS line-by-line so the test catches any JS-side bugs. See `test_widget_show2d.py` `_js_hann_1d` / `_js_apply_hann_window_2d` for the pattern.
 - **IO testing must use real data.** When testing IO features (progress bars, benchmark, loading), write notebooks that load real files already on disk — never generate synthetic data with for-loops and tempfiles. Use paths from existing IO notebooks (`notebooks/io/io_file.ipynb`, `io_folder.ipynb`) as reference for where data lives. Supported formats: EMD (Velox), DM3/DM4, TIFF, Arina 4D-STEM (see `notebooks/io/io_arina_file.ipynb` and `io_arina_folder.ipynb`). Unit tests (`tests/test_io.py`) may use synthetic data for CI portability, but notebooks must always use real files.
 
+## Performance Targets
+
+All interactions must be profiled on real 4K EMD data. See `docs/dev/gpu-optimization.md` for the full interaction audit and methodology.
+
+**Show2D (12×4K gallery) — MacBook M5:**
+
+| Interaction | Target | Current | Path |
+|------------|--------|---------|------|
+| Colormap change | <16ms | 7ms | Zero-copy GPU |
+| Log scale toggle | <16ms | 4ms | GPU shader |
+| Auto-contrast (cached) | <16ms | 4ms | GPU histogram cached |
+| Histogram slider drag | <16ms | ~17ms | GPU + React overhead |
+| Auto-contrast ON (first) | <500ms | 285ms | GPU histogram batch |
+| FFT toggle (12 imgs) | <10s | 5.7s | Progressive batch-4 |
+
+**Show3D (12×4K stack) — MacBook M5:**
+
+| Interaction | Target | Current | Path |
+|------------|--------|---------|------|
+| Colormap change | <16ms | 5ms | Zero-copy GPU |
+| Frame scrub (2K binned) | <33ms | 20ms | 15ms trait + 5ms GPU |
+| Frame scrub (4K no-bin) | <66ms | 60ms | 33ms trait + 5ms GPU |
+| 3-panel frame scrub | <16ms | 3ms | Auto-bin 4× |
+
+**Known slow paths (need optimization):**
+- Show3D `_compute_roi_plot`: scans ALL frames on ROI move (2s for 48×4K)
+- Show3D diff mode: recomputes ALL frames (1s for 48×4K)
+- FFT on 48 images: ~23s (batch-4 progressive)
+- GIF/ZIP export: Python CPU rendering
+
+When adding new features, profile the interaction and add it to the audit table. Anything over 100ms needs a GPU path or lazy computation.
+
 ## Shared Modules
 
 - **`js/theme.ts`** — Shared theme detection and color system. Exports `detectTheme()`, `useTheme()` hook, `ThemeColors` type, `DARK_COLORS`/`LIGHT_COLORS`. Used by all widgets for automatic light/dark theme support.

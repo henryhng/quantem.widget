@@ -537,3 +537,97 @@ limit from JS, which can be used for finer tuning in the future.
 
 Users can override with `display_bin=1` (force full-res) or `display_bin=N`
 (force specific factor). Default is `display_bin="auto"`.
+
+## Interaction Audit
+
+Every user interaction categorized by latency. Measured on MacBook M5 24 GB
+with 12 × 4096×4096 real STEM HAADF EMD data. Use this as a checklist when
+optimizing — anything in SLOW needs work.
+
+### Show2D (gallery viewer)
+
+**FAST (<16ms) — feels instant, 60fps:**
+
+| Interaction | Time | How |
+|------------|------|-----|
+| Colormap change | 7ms | Zero-copy GPU (OffscreenCanvas → ImageBitmap) |
+| Log scale toggle | 4ms | GPU shader log1p, no JS data transform |
+| Auto-contrast (cached) | 4ms | GPU histogram cached across cmap changes |
+| Zoom / pan | <1ms | CSS transform only, no pixel recompute |
+| Gallery image select | <1ms | Border highlight, no recompute |
+| Scale bar update | <1ms | Overlay canvas redraw |
+
+**OK (16–100ms) — noticeable but acceptable:**
+
+| Interaction | Time | Bottleneck |
+|------------|------|-----------|
+| Histogram slider drag | ~17ms | 7ms GPU + ~10ms React effect overhead |
+| Auto-contrast ON (first) | ~285ms | 272ms GPU histogram batch + 13ms render |
+| FFT toggle (single 4K) | ~400ms | WebGPU FFT on 16M complex points |
+| ROI drag | ~7ms | GPU re-render only (no FFT recompute unless ROI-FFT active) |
+| Profile drag | ~1ms per image | CPU bilinear sampling along line (fast, <100 samples) |
+
+**SLOW (>100ms) — user waits:**
+
+| Interaction | Time | Root cause |
+|------------|------|-----------|
+| FFT toggle (12 images) | ~5.7s | 12 × 4K FFT, progressive batch-4 |
+| `set_image` (24 imgs) | ~5.7s | 384 MB trait sync (auto-binned from 1.5 GB) |
+| Constructor (12×4K) | ~3s | Stats + 768 MB trait sync |
+
+**Known remaining bottlenecks:**
+
+- FFT on 48 images: ~23s (batch-4 progressive, but total time is long)
+- ROI-FFT recompute on ROI drag: one 4K FFT per drag event (~400ms)
+- Export to PDF: Python-side matplotlib rendering (~500ms per image)
+
+### Show3D (stack viewer)
+
+**FAST (<16ms) — feels instant:**
+
+| Interaction | Time | How |
+|------------|------|-----|
+| Colormap change | 4–5ms | Zero-copy GPU |
+| Log scale toggle | 5ms | Zero-copy GPU |
+| Zoom / pan | <1ms | CSS transform |
+
+**OK (16–100ms):**
+
+| Interaction | Time | Bottleneck |
+|------------|------|-----------|
+| Frame scrub (binned 2K) | ~20ms | 15ms trait sync (16 MB) + 5ms GPU |
+| Frame scrub (no-bin 4K) | ~60ms | 33ms trait sync (64 MB) + 5ms GPU |
+| Playback at 30fps | 20ms/frame | Fine with binning |
+| 3-panel frame scrub | 3ms | Tiny frames (12 MB) |
+
+**SLOW (>100ms):**
+
+| Interaction | Time | Root cause |
+|------------|------|-----------|
+| FFT on 4K frame | ~400ms | WebGPU FFT, inherent O(N log N) |
+| Constructor (12×4K) | ~800ms | bin2d + stats + trait sync |
+| Constructor (3-panel) | ~1.7s | 3× bin + normalize + concat |
+| `set_image` (48 frames) | ~4.8s | bin2d on 3 GB + trait sync |
+| Playback at 60fps (no-bin) | 33ms/frame | Drops to 30fps (trait sync limit) |
+| GIF export | seconds | Python-side CPU rendering per frame |
+
+**Known remaining bottlenecks (code review):**
+
+- **ROI plot** (`_compute_roi_plot`): scans ALL frames with a mask on every
+  ROI move. For 48×4K: ~2s CPU. Should be GPU-accelerated or lazy.
+- **Diff mode change**: recomputes min/max for ALL frames. For 48×4K: ~1s.
+- **GIF/ZIP export**: Python-side per-frame normalization + colormap. No GPU.
+
+### Audit methodology
+
+To reproduce this audit on different hardware:
+
+1. Start JupyterLab + Chrome with WebGPU (`--remote-debugging-port=9222`)
+2. Load real 4K EMD data via `IO.folder`
+3. Create widget (`Show2D(result, ncols=4)` or `Show3D(result.data)`)
+4. Install console interceptor via CDP
+5. Trigger each interaction via kernel API (`w.cmap='hot'`, `w.slice_idx=5`, etc.)
+6. Read GPU timing from `window._gpuLogs`
+7. For Python-side timing: use `time.perf_counter()` around trait changes
+
+See `tests/gpu/run.py show2d --build` for the automated version.
