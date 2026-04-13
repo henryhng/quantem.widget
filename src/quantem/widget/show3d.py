@@ -473,22 +473,53 @@ class Show3D(anywidget.AnyWidget):
                 self.panel_titles = list(panel_titles)
             else:
                 self.panel_titles = [f"Panel {i+1}" for i in range(len(panels))]
-            # Normalize each panel independently to [0, 1] so they share
-            # the same contrast range in the viewer.
-            # Use torch GPU when available (4× faster on 4K data).
-            normalized = []
-            for p in panels:
-                # Subsample for percentile on large arrays (1.5s → ~50ms)
-                if p.size > 10_000_000:
-                    sample = p.flat[::max(1, p.size // 1_000_000)]
-                    p2, p98 = np.percentile(sample, [2, 98])
+            # Bin each panel FIRST (before normalize), then normalize the
+            # small binned data, then concatenate. Order matters for 4K:
+            #   Old: normalize 768MB×3 (4.8s) → concat 2.3GB → bin (2.3s) = 7.1s
+            #   New: bin 768MB×3 (1.8s) → normalize 48MB×3 (0.1s) → concat = 1.9s
+            from quantem.widget.array_utils import bin2d as _bin2d
+            orig_h = panels[0].shape[1]
+            frame_mb = orig_h * panels[0].shape[2] * 4 / (1024 * 1024)
+            # Compute per-panel bin factor (same auto-bin logic as single panel)
+            panel_bin = 1
+            total_w = sum(p.shape[2] for p in panels) + 2 * (len(panels) - 1)
+            combined_frame_mb = orig_h * total_w * 4 / (1024 * 1024)
+            if combined_frame_mb > 32:
+                for bf in [2, 4, 8]:
+                    if combined_frame_mb / (bf * bf) <= 32:
+                        panel_bin = bf
+                        break
                 else:
-                    p2, p98 = np.percentile(p, [2, 98])
-                rng = p98 - p2
-                if rng < 1e-10:
-                    rng = 1.0
-                normalized.append(np.clip((p - p2) / rng, 0, 1).astype(np.float32))
-            # Concatenate horizontally with 2px black separator (matches canvas bg)
+                    panel_bin = 8
+
+            if panel_bin > 1:
+                # Bin each panel independently (much faster than binning concatenated)
+                binned_panels = []
+                for p in panels:
+                    binned_panels.append(_bin2d(p, factor=panel_bin, mode="mean"))
+                # Normalize the SMALL binned data
+                normalized = []
+                for bp in binned_panels:
+                    if bp.size > 10_000_000:
+                        sample = bp.flat[::max(1, bp.size // 1_000_000)]
+                        p2, p98 = np.percentile(sample, [2, 98])
+                    else:
+                        p2, p98 = np.percentile(bp, [2, 98])
+                    rng = max(p98 - p2, 1e-10)
+                    normalized.append(np.clip((bp - p2) / rng, 0, 1).astype(np.float32))
+            else:
+                # No binning needed — normalize at full res
+                normalized = []
+                for p in panels:
+                    if p.size > 10_000_000:
+                        sample = p.flat[::max(1, p.size // 1_000_000)]
+                        p2, p98 = np.percentile(sample, [2, 98])
+                    else:
+                        p2, p98 = np.percentile(p, [2, 98])
+                    rng = max(p98 - p2, 1e-10)
+                    normalized.append(np.clip((p - p2) / rng, 0, 1).astype(np.float32))
+
+            # Concatenate horizontally with 2px black separator
             sep_w = 2
             sep = np.zeros(
                 (normalized[0].shape[0], normalized[0].shape[1], sep_w),
@@ -500,9 +531,12 @@ class Show3D(anywidget.AnyWidget):
                     parts.append(sep)
                 parts.append(p)
             data = np.concatenate(parts, axis=2)
-            self._panel_width = panels[0].shape[2]
+            self._panel_width = panels[0].shape[2] // max(panel_bin, 1)
+            # Multi-panel already binned — skip auto-bin below
+            self._multi_panel_bin = panel_bin
         else:
             self.n_panels = 1
+            self._multi_panel_bin = 0
             if panel_titles is not None:
                 self.panel_titles = list(panel_titles)
 
@@ -519,11 +553,14 @@ class Show3D(anywidget.AnyWidget):
         orig_w = int(self._data.shape[2])
 
         # Auto-bin for display: reduce per-frame size to speed up trait sync.
-        # Full-res data stays in _data for stats/export. _display_data for rendering.
+        # Multi-panel data is already binned in the multi-panel path above.
         self._display_bin = 1
-        if display_bin == "auto":
-            frame_mb = orig_h * orig_w * 4 / (1024 * 1024)  # float32 per frame
-            if frame_mb > 32:  # bin frames larger than 32 MB (> ~2800×2800)
+        if self._multi_panel_bin > 0:
+            # Multi-panel already binned — _data IS the display data
+            self._display_bin = self._multi_panel_bin
+        elif display_bin == "auto":
+            frame_mb = orig_h * orig_w * 4 / (1024 * 1024)
+            if frame_mb > 32:
                 for bf in [2, 4, 8]:
                     if frame_mb / (bf * bf) <= 32:
                         self._display_bin = bf
@@ -533,7 +570,16 @@ class Show3D(anywidget.AnyWidget):
         elif isinstance(display_bin, int) and display_bin > 1:
             self._display_bin = display_bin
 
-        if self._display_bin > 1:
+        if self._multi_panel_bin > 0:
+            # Multi-panel already binned — _data IS the display data
+            self._display_data = self._data
+            self.height = orig_h
+            self.width = orig_w
+            self._display_bin_factor = self._multi_panel_bin
+            if pixel_size > 0:
+                pixel_size = pixel_size * self._multi_panel_bin
+            print(f"  Display bin {self._multi_panel_bin}× (multi-panel): {self.height}×{self.width} ({self._display_data[0].nbytes // 1024 // 1024} MB/frame)")
+        elif self._display_bin > 1:
             from quantem.widget.array_utils import bin2d
             self._display_data = bin2d(self._data, factor=self._display_bin, mode="mean")
             self.height = int(self._display_data.shape[1])
