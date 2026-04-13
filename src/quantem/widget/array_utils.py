@@ -140,7 +140,9 @@ def bin2d(data, factor: int = 2, mode: str = "mean", edge_mode: str = "crop") ->
     np.ndarray
         Binned array, dtype float32.
     """
-    arr = to_numpy(data).astype(np.float32)
+    arr = to_numpy(data)
+    if arr.dtype != np.float32:
+        arr = arr.astype(np.float32)
 
     # Torch GPU fast path: only for arrays between 1M and 500M elements.
     # Larger arrays hit MPS memory transfer bottleneck (>2 GB transfer > CPU compute).

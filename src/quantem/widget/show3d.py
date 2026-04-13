@@ -493,10 +493,17 @@ class Show3D(anywidget.AnyWidget):
                     panel_bin = 8
 
             if panel_bin > 1:
-                # Bin each panel independently (much faster than binning concatenated)
+                # Bin each panel with direct reshape+mean (no copy overhead)
                 binned_panels = []
                 for p in panels:
-                    binned_panels.append(_bin2d(p, factor=panel_bin, mode="mean"))
+                    n_f, h_f, w_f = p.shape
+                    oh = h_f // panel_bin * panel_bin
+                    ow = w_f // panel_bin * panel_bin
+                    binned_panels.append(
+                        p[:, :oh, :ow]
+                        .reshape(n_f, oh // panel_bin, panel_bin, ow // panel_bin, panel_bin)
+                        .mean(axis=(2, 4)).astype(np.float32)
+                    )
                 # Normalize the SMALL binned data
                 normalized = []
                 for bp in binned_panels:
