@@ -18,7 +18,8 @@ import Slider from "@mui/material/Slider";
 import Button from "@mui/material/Button";
 import Tooltip from "@mui/material/Tooltip";
 import { useTheme } from "../theme";
-import { drawScaleBarHiDPI } from "../scalebar";
+import { drawScaleBarHiDPI, drawColorbar, exportFigure, canvasToPDF } from "../scalebar";
+import { getWebGPUFFT, WebGPUFFT, fft2d, fftshift, computeMagnitude, autoEnhanceFFT, nextPow2, applyHannWindow2D } from "../webgpu-fft";
 import {
   COLORMAPS,
   COLORMAP_NAMES,
@@ -318,6 +319,13 @@ const render = createRender(() => {
   const [showControls] = useModelState<boolean>("show_controls");
   const [pixelSize] = useModelState<number>("pixel_size");
   const [showStats] = useModelState<boolean>("show_stats");
+  const [scaleBarVisible] = useModelState<boolean>("scale_bar_visible");
+  const [showFft, setShowFft] = useModelState<boolean>("show_fft");
+  const [fftWindow, setFftWindow] = useModelState<boolean>("fft_window");
+  const [roiActive, setRoiActive] = useModelState<boolean>("roi_active");
+  const [roiList, setRoiList] = useModelState<{ [key: string]: unknown }[]>("roi_list");
+  const [roiSelectedIdx, setRoiSelectedIdx] = useModelState<number>("roi_selected_idx");
+  const [profileLine, setProfileLine] = useModelState<{ row: number; col: number }[]>("profile_line");
 
   // Push / Batch traits
   const [pushBytes] = useModelState<DataView>("_push_bytes");
@@ -360,6 +368,19 @@ const render = createRender(() => {
     col: number;
     value: number;
   } | null>(null);
+
+  // FFT state
+  const gpuFFTRef = React.useRef<WebGPUFFT | null>(null);
+  const [gpuFftReady, setGpuFftReady] = React.useState(false);
+  const fftOffscreenRef = React.useRef<HTMLCanvasElement | null>(null);
+  const fftImgDataRef = React.useRef<ImageData | null>(null);
+  const fftMagRef = React.useRef<Float32Array | null>(null);
+  const [fftComputing, setFftComputing] = React.useState(false);
+  const [fftDataRange, setFftDataRange] = React.useState<{ min: number; max: number }>({ min: 0, max: 1 });
+  const fftCanvasRef = React.useRef<HTMLCanvasElement>(null);
+  const [fftVminPct, setFftVminPct] = React.useState(0);
+  const [fftVmaxPct, setFftVmaxPct] = React.useState(100);
+  const [profileActive, setProfileActive] = React.useState(false);
 
   // Zoom / pan
   const [zoom, setZoom] = React.useState(1);
@@ -423,6 +444,13 @@ const render = createRender(() => {
         console.log("[Live] WebGPU colormap engine initialized");
       } else {
         console.log("[Live] WebGPU unavailable — using CPU fallback");
+      }
+    });
+    getWebGPUFFT().then((fft) => {
+      if (fft) {
+        gpuFFTRef.current = fft;
+        setGpuFftReady(true);
+        console.log("[Live] WebGPU FFT initialized");
       }
     });
   }, []);
@@ -733,6 +761,82 @@ const render = createRender(() => {
       drawScaleBarHiDPI(uiCanvas, DPR, zoom, pixelSize, unit, displayFrame.width);
     }
   }, [canvasW, canvasH, zoom, pixelSize, displayFrame]);
+
+  // ─── FFT computation for current frame ──────────────────────────
+  React.useEffect(() => {
+    if (!showFft || !displayFrame) {
+      fftMagRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    const compute = async () => {
+      setFftComputing(true);
+      const { data, width, height } = displayFrame;
+      const fftW = nextPow2(width);
+      const fftH = nextPow2(height);
+      let inputData = data;
+      if (fftW !== width || fftH !== height) {
+        const padded = new Float32Array(fftW * fftH);
+        for (let y = 0; y < height; y++)
+          for (let x = 0; x < width; x++) padded[y * fftW + x] = data[y * width + x];
+        inputData = padded;
+      }
+      const real = inputData.slice();
+      const imag = new Float32Array(real.length);
+      if (fftWindow) applyHannWindow2D(real, fftW, fftH);
+      if (gpuFFTRef.current && gpuFftReady) {
+        const result = await gpuFFTRef.current.fft2D(real, imag, fftW, fftH, false);
+        if (cancelled) return;
+        fftshift(result.real, fftW, fftH);
+        fftshift(result.imag, fftW, fftH);
+        fftMagRef.current = computeMagnitude(result.real, result.imag);
+      } else {
+        fft2d(real, imag, fftW, fftH, false);
+        if (cancelled) return;
+        fftshift(real, fftW, fftH);
+        fftshift(imag, fftW, fftH);
+        fftMagRef.current = computeMagnitude(real, imag);
+      }
+      if (cancelled) return;
+      // Auto-enhance + render
+      const mag = fftMagRef.current;
+      const enhanced = autoEnhanceFFT(mag, fftW, fftH);
+      setFftDataRange({ min: enhanced.vmin, max: enhanced.vmax });
+      // Render FFT to offscreen canvas
+      if (!fftOffscreenRef.current || fftOffscreenRef.current.width !== fftW || fftOffscreenRef.current.height !== fftH) {
+        fftOffscreenRef.current = document.createElement("canvas");
+        fftOffscreenRef.current.width = fftW;
+        fftOffscreenRef.current.height = fftH;
+        fftImgDataRef.current = fftOffscreenRef.current.getContext("2d")!.createImageData(fftW, fftH);
+      }
+      const lut = COLORMAPS[cmap] || COLORMAPS.inferno;
+      const { vmin, vmax } = sliderRange(enhanced.vmin, enhanced.vmax, fftVminPct, fftVmaxPct);
+      renderToOffscreenReuse(mag, lut, vmin, vmax, fftOffscreenRef.current, fftImgDataRef.current!);
+      // Draw to FFT canvas
+      const fftCanvas = fftCanvasRef.current;
+      if (fftCanvas) {
+        fftCanvas.width = canvasW * DPR;
+        fftCanvas.height = canvasH * DPR;
+        const fctx = fftCanvas.getContext("2d");
+        if (fctx) {
+          fctx.imageSmoothingEnabled = false;
+          fctx.clearRect(0, 0, fftCanvas.width, fftCanvas.height);
+          fctx.save();
+          fctx.scale(DPR, DPR);
+          const scale = Math.min(canvasW / fftW, canvasH / fftH) * 3;
+          const ox = (canvasW - fftW * scale) / 2;
+          const oy = (canvasH - fftH * scale) / 2;
+          fctx.translate(ox, oy);
+          fctx.scale(scale, scale);
+          fctx.drawImage(fftOffscreenRef.current, 0, 0);
+          fctx.restore();
+        }
+      }
+      setFftComputing(false);
+    };
+    compute();
+    return () => { cancelled = true; };
+  }, [showFft, displayFrame, fftWindow, gpuFftReady, cmap, canvasW, canvasH, fftVminPct, fftVmaxPct]);
 
   // ─── Prevent page scroll on canvas ──────────────────────────────
   React.useEffect(() => {
@@ -1070,6 +1174,24 @@ const render = createRender(() => {
         )}
       </Stack>
 
+      {/* ── Toggle row (Show2D style) ────────────────────────────── */}
+      {showControls && (
+        <Stack direction="row" spacing={`${SPACING.SM}px`} alignItems="center" sx={{ mb: `${SPACING.XS}px` }}>
+          <Typography sx={{ ...typography.labelSmall, fontSize: 10 }}>FFT:</Typography>
+          <Switch checked={showFft} onChange={(e) => setShowFft(e.target.checked)} size="small" sx={switchStyles.small} />
+          <Typography sx={{ ...typography.labelSmall, fontSize: 10 }}>ROI:</Typography>
+          <Switch checked={roiActive} onChange={(e) => setRoiActive(e.target.checked)} size="small" sx={switchStyles.small} />
+          <Box sx={{ flex: 1 }} />
+          <Typography sx={{ ...typography.labelSmall, fontSize: 10, color: themeColors.accent, cursor: "pointer", "&:hover": { opacity: 0.7 } }}
+            onClick={() => { setZoom(1); setPanX(0); setPanY(0); }}>RESET</Typography>
+          <Typography sx={{ ...typography.labelSmall, fontSize: 10, color: themeColors.accent, cursor: "pointer", "&:hover": { opacity: 0.7 } }}
+            onClick={() => {
+              const c = canvasRef.current;
+              if (c) { c.toBlob(blob => { if (blob) navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]); }); }
+            }}>COPY</Typography>
+        </Stack>
+      )}
+
       {/* ── Body: filmstrip + inspect panel ───────────────────────── */}
       <Stack direction="row" spacing={`${SPACING.LG}px`} alignItems="flex-start">
 
@@ -1206,7 +1328,8 @@ const render = createRender(() => {
             </Button>
           </Stack>
 
-          {/* Canvas */}
+          {/* Canvas + FFT side by side */}
+          <Stack direction="row" spacing={`${SPACING.SM}px`}>
           <Box
             ref={canvasContainerRef}
             sx={{
@@ -1317,6 +1440,30 @@ const render = createRender(() => {
               }}
             />
           </Box>
+
+          {/* FFT panel (side by side) */}
+          {showFft && (
+            <Box sx={{
+              position: "relative",
+              border: `1px solid ${themeColors.border}`,
+              bgcolor: themeColors.controlBg,
+              overflow: "hidden",
+              width: canvasW,
+              height: canvasH,
+            }}>
+              <canvas
+                ref={fftCanvasRef}
+                width={canvasW} height={canvasH}
+                style={{ width: canvasW, height: canvasH, imageRendering: "pixelated" }}
+              />
+              {fftComputing && (
+                <Box sx={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", bgcolor: "rgba(0,0,0,0.6)", px: 2, py: 1, borderRadius: 1 }}>
+                  <Typography sx={{ fontSize: 11, color: "#fff" }}>Computing FFT...</Typography>
+                </Box>
+              )}
+            </Box>
+          )}
+          </Stack>
 
           {/* Stats bar — same format as Show2D */}
           {showStats && frameCount > 0 && (

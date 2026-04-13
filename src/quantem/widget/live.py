@@ -86,6 +86,27 @@ class Live(anywidget.AnyWidget):
     _batch_labels = traitlets.List(traitlets.Unicode()).tag(sync=True)
     _batch_counter = traitlets.Int(0).tag(sync=True)
 
+    show_stats = traitlets.Bool(True).tag(sync=True)
+    scale_bar_visible = traitlets.Bool(True).tag(sync=True)
+
+    # =========================================================================
+    # FFT
+    # =========================================================================
+    show_fft = traitlets.Bool(False).tag(sync=True)
+    fft_window = traitlets.Bool(True).tag(sync=True)
+
+    # =========================================================================
+    # ROI — multi-list pattern (same as Show2D)
+    # =========================================================================
+    roi_active = traitlets.Bool(False).tag(sync=True)
+    roi_list = traitlets.List(traitlets.Dict()).tag(sync=True)
+    roi_selected_idx = traitlets.Int(-1).tag(sync=True)
+
+    # =========================================================================
+    # Line profile
+    # =========================================================================
+    profile_line = traitlets.List(traitlets.Dict()).tag(sync=True)
+
     # =========================================================================
     # 3D mode — current frame index for playback
     # =========================================================================
