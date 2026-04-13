@@ -724,11 +724,13 @@ def test_show3d_duplicate_and_delete_selected_roi():
 # =========================================================================
 
 def test_show3d_roi_plot_data():
+    import time
     data = np.zeros((5, 8, 8), dtype=np.float32)
     for i in range(5):
         data[i] = float(i)
     widget = Show3D(data)
     widget.set_roi(4, 4, 3)
+    time.sleep(0.7)  # ROI plot is debounced (500ms)
     assert len(widget.roi_plot_data) > 0
     plot = np.frombuffer(widget.roi_plot_data, dtype=np.float32)
     assert len(plot) == 5
@@ -736,9 +738,11 @@ def test_show3d_roi_plot_data():
         assert plot[i] == pytest.approx(float(i))
 
 def test_show3d_roi_plot_data_cleared():
+    import time
     data = np.random.rand(5, 8, 8).astype(np.float32)
     widget = Show3D(data)
     widget.set_roi(4, 4, 3)
+    time.sleep(0.7)  # ROI plot is debounced (500ms)
     assert len(widget.roi_plot_data) > 0
     widget.roi_active = False
     assert widget.roi_plot_data == b""
@@ -1087,3 +1091,69 @@ def test_show3d_diff_mode_toggle_restores_range():
     w.diff_mode = "off"
     assert w.data_min == pytest.approx(orig_min)
     assert w.data_max == pytest.approx(orig_max)
+
+
+# ── vmin/vmax ──────────────────────────────────────────────────────────
+
+
+def test_show3d_vmin_vmax_default_none():
+    data = np.random.rand(5, 16, 16).astype(np.float32)
+    w = Show3D(data)
+    assert w.vmin is None
+    assert w.vmax is None
+
+
+def test_show3d_vmin_vmax_constructor():
+    data = np.random.rand(5, 16, 16).astype(np.float32) * 1000
+    w = Show3D(data, vmin=100, vmax=800)
+    assert w.vmin == pytest.approx(100)
+    assert w.vmax == pytest.approx(800)
+
+
+def test_show3d_vmin_vmax_state_dict_roundtrip():
+    data = np.random.rand(5, 16, 16).astype(np.float32) * 1000
+    w = Show3D(data, vmin=50, vmax=900)
+    sd = w.state_dict()
+    assert sd["vmin"] == pytest.approx(50)
+    assert sd["vmax"] == pytest.approx(900)
+    w2 = Show3D(data, state=sd)
+    assert w2.vmin == pytest.approx(50)
+    assert w2.vmax == pytest.approx(900)
+
+
+def test_show3d_vmin_vmax_none_in_state_dict():
+    data = np.random.rand(5, 16, 16).astype(np.float32)
+    w = Show3D(data)
+    sd = w.state_dict()
+    assert sd["vmin"] is None
+    assert sd["vmax"] is None
+
+
+def test_show3d_vmin_vmax_normalize_frame():
+    data = np.zeros((3, 4, 4), dtype=np.float32)
+    data[0] = 0.0
+    data[1] = 500.0
+    data[2] = 1500.0
+    w = Show3D(data, vmin=0, vmax=1000)
+    frame = w._normalize_frame(data[1])
+    # 500 out of [0, 1000] → ~127
+    assert 120 <= frame[0, 0] <= 135
+    frame_clamp = w._normalize_frame(data[2])
+    # 1500 > 1000 → clamped to 255
+    assert frame_clamp[0, 0] == 255
+
+
+def test_show3d_vmin_vmax_save_image(tmp_path):
+    data = np.random.rand(5, 16, 16).astype(np.float32) * 1000
+    w = Show3D(data, vmin=100, vmax=800)
+    p = w.save_image(tmp_path / "frame.png")
+    assert p.exists()
+
+
+def test_show3d_vmin_vmax_summary(capsys):
+    data = np.random.rand(5, 16, 16).astype(np.float32)
+    w = Show3D(data, vmin=10.0, vmax=500.0)
+    w.summary()
+    out = capsys.readouterr().out
+    assert "vmin=10" in out
+    assert "vmax=500" in out

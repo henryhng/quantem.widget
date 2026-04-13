@@ -1045,10 +1045,16 @@ class Show3D(anywidget.AnyWidget):
         self._update_all()
 
     def _on_roi_change(self, change=None):
-        """Handle ROI change."""
+        """Handle ROI change. Stats for current frame are instant.
+        Full-stack ROI plot is debounced (500ms) to avoid UI freeze during drag."""
         if self.roi_active:
             self._update_roi_stats(self._get_display_frame())
-            self._compute_roi_plot()
+            # Debounce the expensive all-frame ROI plot
+            if hasattr(self, '_roi_plot_timer') and self._roi_plot_timer is not None:
+                self._roi_plot_timer.cancel()
+            import threading
+            self._roi_plot_timer = threading.Timer(0.5, self._compute_roi_plot)
+            self._roi_plot_timer.start()
         else:
             self.roi_stats = {}
             self.roi_plot_data = b""

@@ -503,20 +503,57 @@ function Show2D() {
   const [fftPanStart, setFftPanStart] = React.useState<{ x: number, y: number, pX: number, pY: number } | null>(null);
 
   // Histogram state — per-image contrast ranges (gallery) or single (one image)
-  const [linkedContrast, setLinkedContrast] = React.useState(true); // link contrast across gallery images
+  const [linkedContrast, setLinkedContrast] = React.useState(true);
   const [linkedContrastState, setLinkedContrastState] = React.useState<{ vminPct: number; vmaxPct: number }>({ vminPct: 0, vmaxPct: 100 });
   const [contrastStates, setContrastStates] = React.useState<Map<number, { vminPct: number; vmaxPct: number }>>(new Map());
+  // Ref mirror for fast slider path (bypass React effect batching)
+  const contrastRef = React.useRef<{ linked: { vminPct: number; vmaxPct: number }; perImage: Map<number, { vminPct: number; vmaxPct: number }> }>({ linked: { vminPct: 0, vmaxPct: 100 }, perImage: new Map() });
+  const sliderRafRef = React.useRef(0);
   const getContrastState = React.useCallback((idx: number) => {
     if (linkedContrast) return linkedContrastState;
     return contrastStates.get(idx) || { vminPct: 0, vmaxPct: 100 };
   }, [linkedContrast, linkedContrastState, contrastStates]);
   const setContrastState = React.useCallback((idx: number, state: { vminPct: number; vmaxPct: number }) => {
+    // Update ref immediately (for fast rAF render)
     if (linkedContrast) {
+      contrastRef.current.linked = state;
       setLinkedContrastState(state);
     } else {
+      contrastRef.current.perImage.set(idx, state);
       setContrastStates(prev => new Map(prev).set(idx, state));
     }
-  }, [linkedContrast]);
+    // Fast path: direct GPU render via rAF, bypassing React effect batching
+    const engine = gpuCmapRef.current;
+    if (engine && gpuCmapReadyRef.current && engine.slotCount >= nImages) {
+      cancelAnimationFrame(sliderRafRef.current);
+      sliderRafRef.current = requestAnimationFrame(() => {
+        const cachedRanges = dataRangesRef.current;
+        if (cachedRanges.length === 0) return;
+        const lut = COLORMAPS[cmapRef.current] || COLORMAPS.inferno;
+        engine.uploadLUT(cmapRef.current, lut);
+        const indices = Array.from({ length: nImages }, (_, i) => i);
+        const ranges: { vmin: number; vmax: number }[] = [];
+        for (let i = 0; i < nImages; i++) {
+          const cs = linkedContrast ? contrastRef.current.linked : (contrastRef.current.perImage.get(i) || { vminPct: 0, vmaxPct: 100 });
+          const cr = cachedRanges[i] || { min: 0, max: 1 };
+          if (cs.vminPct > 0 || cs.vmaxPct < 100) {
+            ranges.push(sliderRange(cr.min, cr.max, cs.vminPct, cs.vmaxPct));
+          } else {
+            ranges.push({ vmin: cr.min, vmax: cr.max });
+          }
+        }
+        const ls = logScaleRef.current ?? false;
+        const bitmaps = engine.renderSlotsToImageBitmap(indices, ranges, ls);
+        if (bitmaps && bitmaps[0]) {
+          for (let i = 0; i < bitmaps.length; i++) {
+            const offscreen = mainOffscreensRef.current[i];
+            if (offscreen && bitmaps[i]) offscreen.getContext("2d")?.drawImage(bitmaps[i], 0, 0);
+          }
+          setOffscreenVersion(v => v + 1);
+        }
+      });
+    }
+  }, [linkedContrast, nImages]);
   // Convenience accessors for active image
   const activeContrastIdx = nImages > 1 ? selectedIdx : 0;
   const imageVminPct = getContrastState(activeContrastIdx).vminPct;
@@ -850,9 +887,11 @@ function Show2D() {
   const dataRangesRef = React.useRef<{ min: number; max: number }[]>([]);
   // Cached log-transformed data — avoids 12×16M log1p calls per slider tick
   const logDataCacheRef = React.useRef<Float32Array[]>([]);
-  // Ref mirror of logScale for async GPU callbacks (avoid stale closure)
+  // Ref mirrors for async GPU callbacks (avoid stale closures)
   const logScaleRef = React.useRef(logScale);
   logScaleRef.current = logScale;
+  const cmapRef = React.useRef(cmap);
+  cmapRef.current = cmap;
   // Auto-contrast cache: GPU-computed percentile ranges per image
   const autoContrastCacheRef = React.useRef<{ vmin: number; vmax: number }[]>([]);
 
