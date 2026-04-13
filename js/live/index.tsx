@@ -2080,11 +2080,6 @@ const render = createRender(() => {
 
             {/* (FFT panel is outside this box, to the right) */}
 
-            {/* Zoom indicator (bottom-left) */}
-            <Typography sx={{ position: "absolute", bottom: 4, left: 6, fontSize: 11, fontWeight: 600, color: "#fff", textShadow: "0 0 3px rgba(0,0,0,0.8)", pointerEvents: "none", zIndex: 5 }}>
-              {zoom.toFixed(1)}×
-            </Typography>
-
             {/* Resize handle (bottom-right triangle) */}
             <Box
               onMouseDown={handleResizeMouseDown}
@@ -2183,20 +2178,6 @@ const render = createRender(() => {
                   {formatNumber(statsStd)}
                 </Box>
               </Typography>
-              {zoom !== 1 && (
-                <>
-                  <Box sx={{ flex: 1 }} />
-                  <Typography
-                    sx={{
-                      ...typography.value,
-                      color: themeColors.accent,
-                      fontWeight: "bold",
-                    }}
-                  >
-                    {zoom.toFixed(1)}×
-                  </Typography>
-                </>
-              )}
             </Box>
           )}
 
