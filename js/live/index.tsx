@@ -1122,12 +1122,10 @@ const render = createRender(() => {
       }
       const lut = COLORMAPS[cmap] || COLORMAPS.inferno;
       renderToOffscreenReuse(mag, lut, fftMin, fftMax, fftOffscreenRef.current, fftImgDataRef.current!);
-      // Draw to FFT panel canvas (full-height square, to the right of image)
+      // Draw to FFT panel canvas (small square, top-right)
       const fftCanvas = fftCanvasRef.current;
       if (fftCanvas) {
-        const panelSize = canvasH;
-        fftCanvas.width = panelSize * DPR;
-        fftCanvas.height = panelSize * DPR;
+        const panelSize = Math.round(canvasH * 0.4);
         const fctx = fftCanvas.getContext("2d");
         if (fctx) {
           fctx.imageSmoothingEnabled = false;
@@ -1923,7 +1921,7 @@ const render = createRender(() => {
         {/* ══ RIGHT: Inspect Panel ═════════════════════════════════ */}
         <Box
           sx={{
-            width: canvasW,
+            width: showFft ? canvasW + Math.round(canvasH * 0.4) + SPACING.SM : canvasW,
             flexShrink: 0,
             display: "flex",
             flexDirection: "column",
@@ -1980,6 +1978,8 @@ const render = createRender(() => {
               border: `1px solid ${themeColors.border}`,
               width: canvasW,
               height: canvasH,
+              minWidth: canvasW,
+              flexShrink: 0,
               cursor: isHoveringResize || isHoveringResizeInner ? "nwse-resize" : profileActive ? "crosshair" : roiActive ? "crosshair" : "grab",
               overflow: "hidden",
             }}
@@ -2091,33 +2091,36 @@ const render = createRender(() => {
             />
           </Box>
 
-          {/* FFT panel — independent square, same height as image canvas */}
-          {showFft && (
+          {/* FFT panel — small square, top-right, ~1/4 of canvas height */}
+          {showFft && (() => {
+            const fftSize = Math.round(canvasH * 0.4);
+            return (
             <Box sx={{
               position: "relative",
               border: `1px solid ${themeColors.border}`,
               bgcolor: "#000",
               overflow: "hidden",
-              width: canvasH,
-              height: canvasH,
-              minWidth: canvasH,
+              width: fftSize,
+              height: fftSize,
+              minWidth: fftSize,
               flexShrink: 0,
               alignSelf: "flex-start",
             }}>
               <canvas
                 ref={fftCanvasRef}
-                width={canvasH * DPR}
-                height={canvasH * DPR}
-                style={{ width: canvasH, height: canvasH, imageRendering: "pixelated" }}
+                width={fftSize * DPR}
+                height={fftSize * DPR}
+                style={{ width: fftSize, height: fftSize, imageRendering: "pixelated" }}
               />
               {fftComputing && (
-                <Box sx={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", bgcolor: "rgba(0,0,0,0.7)", px: 1.5, py: 0.5 }}>
-                  <Typography sx={{ fontSize: 10, color: "#fff" }}>Computing FFT...</Typography>
+                <Box sx={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", bgcolor: "rgba(0,0,0,0.7)", px: 1, py: 0.25 }}>
+                  <Typography sx={{ fontSize: 9, color: "#fff" }}>FFT...</Typography>
                 </Box>
               )}
-              <Typography sx={{ position: "absolute", top: 3, left: 5, fontSize: 10, fontWeight: 600, color: "rgba(255,255,255,0.7)", pointerEvents: "none", textShadow: "0 0 3px rgba(0,0,0,0.8)" }}>FFT</Typography>
+              <Typography sx={{ position: "absolute", top: 2, left: 4, fontSize: 9, fontWeight: 600, color: "rgba(255,255,255,0.7)", pointerEvents: "none", textShadow: "0 0 3px rgba(0,0,0,0.8)" }}>FFT</Typography>
             </Box>
-          )}
+            );
+          })()}
           </Stack>
 
           {/* Stats bar — same format as Show2D */}
