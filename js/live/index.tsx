@@ -1122,10 +1122,10 @@ const render = createRender(() => {
       }
       const lut = COLORMAPS[cmap] || COLORMAPS.inferno;
       renderToOffscreenReuse(mag, lut, fftMin, fftMax, fftOffscreenRef.current, fftImgDataRef.current!);
-      // Draw to FFT panel canvas (half-height square, to the right)
+      // Draw to FFT panel canvas (full-height square, to the right of image)
       const fftCanvas = fftCanvasRef.current;
       if (fftCanvas) {
-        const panelSize = Math.round(canvasH * 0.5);
+        const panelSize = canvasH;
         fftCanvas.width = panelSize * DPR;
         fftCanvas.height = panelSize * DPR;
         const fctx = fftCanvas.getContext("2d");
@@ -1134,7 +1134,7 @@ const render = createRender(() => {
           fctx.clearRect(0, 0, fftCanvas.width, fftCanvas.height);
           fctx.save();
           fctx.scale(DPR, DPR);
-          // Fit FFT centered with 3× zoom
+          // Fit FFT centered with 3× default zoom (same as Show2D)
           const scale = Math.min(panelSize / fftW, panelSize / fftH) * 3;
           const ox = (panelSize - fftW * scale) / 2;
           const oy = (panelSize - fftH * scale) / 2;
@@ -2091,28 +2091,31 @@ const render = createRender(() => {
             />
           </Box>
 
-          {/* FFT panel (to the right of image, square) */}
+          {/* FFT panel — independent square, same height as image canvas */}
           {showFft && (
             <Box sx={{
               position: "relative",
               border: `1px solid ${themeColors.border}`,
               bgcolor: "#000",
               overflow: "hidden",
-              width: Math.round(canvasH * 0.5),
-              height: Math.round(canvasH * 0.5),
+              width: canvasH,
+              height: canvasH,
+              minWidth: canvasH,
               flexShrink: 0,
               alignSelf: "flex-start",
             }}>
               <canvas
                 ref={fftCanvasRef}
-                style={{ width: "100%", height: "100%", imageRendering: "pixelated" }}
+                width={canvasH * DPR}
+                height={canvasH * DPR}
+                style={{ width: canvasH, height: canvasH, imageRendering: "pixelated" }}
               />
               {fftComputing && (
-                <Box sx={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", bgcolor: "rgba(0,0,0,0.7)", px: 1, py: 0.25 }}>
-                  <Typography sx={{ fontSize: 9, color: "#fff" }}>FFT...</Typography>
+                <Box sx={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", bgcolor: "rgba(0,0,0,0.7)", px: 1.5, py: 0.5 }}>
+                  <Typography sx={{ fontSize: 10, color: "#fff" }}>Computing FFT...</Typography>
                 </Box>
               )}
-              <Typography sx={{ position: "absolute", top: 2, left: 4, fontSize: 9, color: "rgba(255,255,255,0.6)", pointerEvents: "none" }}>FFT</Typography>
+              <Typography sx={{ position: "absolute", top: 3, left: 5, fontSize: 10, fontWeight: 600, color: "rgba(255,255,255,0.7)", pointerEvents: "none", textShadow: "0 0 3px rgba(0,0,0,0.8)" }}>FFT</Typography>
             </Box>
           )}
           </Stack>
