@@ -131,6 +131,18 @@ All interactions must be profiled on real 4K EMD data. See `docs/dev/gpu-optimiz
 - FFT on 48 images: ~23s (batch-4 progressive)
 - GIF/ZIP export: Python CPU rendering
 
+**Next GPU target: Show3DVolume (#91)**
+- 3 orthogonal slice panels (XY, XZ, YZ), each re-renders on every slice scrub
+- Users scrub rapidly through volume — 3× colormap work per interaction
+- Same zero-copy pattern (OffscreenCanvas → ImageBitmap) would make all 3 slices instant
+- Volume data is typically 256³ to 512³ (manageable) but can be 1024³+ (needs auto-bin)
+
+**Widgets that do NOT need GPU colormap:**
+- Show4DSTEM: detector frames are 128×128 to 512×512 — CPU colormap is <1ms, GPU overhead would be slower
+- Show4D: signal panels are typically small (256×256 to 512×512)
+- Edit2D, Align2D: single image, small data
+- Only apply GPU colormap to widgets handling 2K+ pixel images
+
 When adding new features, profile the interaction and add it to the audit table. Anything over 100ms needs a GPU path or lazy computation.
 
 ## Shared Modules
