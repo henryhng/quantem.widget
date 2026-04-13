@@ -570,6 +570,100 @@ export class GPUColormapEngine {
   }
 
   /**
+   * GPU colormap → OffscreenCanvas → ImageBitmap (zero mapAsync).
+   * Compute shader writes RGBA, render pass blits to OffscreenCanvas texture,
+   * transferToImageBitmap() returns ImageBitmap for drawImage on 2D canvas.
+   * Eliminates the 35ms JS memcpy for 12×4K images.
+   */
+  renderSlotsToImageBitmap(
+    indices: number[],
+    ranges: { vmin: number; vmax: number }[],
+    logScale: boolean = false,
+  ): ImageBitmap[] | null {
+    if (!this.pipeline || !this.lutBuffer || indices.length === 0) return null;
+    const t0 = performance.now();
+    const fmt = navigator.gpu.getPreferredCanvasFormat();
+    this.ensureBlitPipeline(fmt);
+    if (!this.blitPipeline) return null;
+
+    const encoder = this.device.createCommandEncoder();
+    const params = new ArrayBuffer(24);
+    const canvases: OffscreenCanvas[] = [];
+
+    for (let k = 0; k < indices.length; k++) {
+      const i = indices[k];
+      const slot = this.slots[i];
+      if (!slot) { canvases.push(null as never); continue; }
+      const range = ranges[k] || { vmin: 0, vmax: 1 };
+
+      // Compute colormap
+      this._writeParams(params, slot.width, slot.height, range.vmin, range.vmax, logScale);
+      this.device.queue.writeBuffer(slot.paramsBuffer, 0, params);
+
+      const computeGroup = this.device.createBindGroup({
+        layout: this.pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: slot.paramsBuffer } },
+          { binding: 1, resource: { buffer: slot.dataBuffer } },
+          { binding: 2, resource: { buffer: this.lutBuffer } },
+          { binding: 3, resource: { buffer: slot.rgbaBuffer } },
+        ],
+      });
+      const computePass = encoder.beginComputePass();
+      computePass.setPipeline(this.pipeline);
+      computePass.setBindGroup(0, computeGroup);
+      computePass.dispatchWorkgroups(Math.ceil(slot.width / 16), Math.ceil(slot.height / 16));
+      computePass.end();
+
+      // Blit to OffscreenCanvas
+      const oc = new OffscreenCanvas(slot.width, slot.height);
+      const ctx = oc.getContext("webgpu") as GPUCanvasContext;
+      ctx.configure({ device: this.device, format: fmt, alphaMode: "opaque" });
+
+      const blitParamsBuffer = this.device.createBuffer({
+        size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      this.device.queue.writeBuffer(blitParamsBuffer, 0, new Uint32Array([slot.width, slot.height]));
+
+      const blitGroup = this.device.createBindGroup({
+        layout: this.blitPipeline!.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: blitParamsBuffer } },
+          { binding: 1, resource: { buffer: slot.rgbaBuffer } },
+        ],
+      });
+
+      const texture = ctx.getCurrentTexture();
+      const renderPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: texture.createView(),
+          loadOp: "clear" as GPULoadOp,
+          storeOp: "store" as GPUStoreOp,
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        }],
+      });
+      renderPass.setPipeline(this.blitPipeline!);
+      renderPass.setBindGroup(0, blitGroup);
+      renderPass.draw(3);
+      renderPass.end();
+      canvases.push(oc);
+    }
+
+    this.device.queue.submit([encoder.finish()]);
+
+    // transferToImageBitmap after GPU finishes (synchronous, no mapAsync)
+    const bitmaps: ImageBitmap[] = [];
+    for (const oc of canvases) {
+      if (oc) bitmaps.push(oc.transferToImageBitmap());
+      else bitmaps.push(null as never);
+    }
+
+    const elapsed = performance.now() - t0;
+    console.log(`[GPU] zeroCopy→ImageBitmap: ${bitmaps.length}×${this.slots[indices[0]]?.width ?? 0}×${this.slots[indices[0]]?.height ?? 0} in ${elapsed.toFixed(0)}ms`);
+    return bitmaps;
+  }
+
+  /**
    * Configure a canvas for WebGPU zero-copy rendering.
    * Returns the GPUCanvasContext, or null if WebGPU canvas is not supported.
    */

@@ -1004,7 +1004,9 @@ function Show2D() {
       colorbarVmaxRef.current = ranges[0].vmax;
     }
 
-    // GPU colormap — first-class citizen. renderSlots with rAF coalescing.
+    // GPU colormap — first-class citizen.
+    // Try zero-copy path (OffscreenCanvas → ImageBitmap, no mapAsync).
+    // Falls back to renderSlots (mapAsync + putImageData) if zero-copy fails.
     const engine = gpuCmapRef.current;
     const gpuReady = engine && gpuCmapReadyRef.current && engine.slotCount >= nImages;
     if (gpuReady) {
@@ -1014,6 +1016,21 @@ function Show2D() {
       const capturedNImages = nImages;
       requestAnimationFrame(async () => {
         const indices = Array.from({ length: capturedNImages }, (_, i) => i);
+
+        // Zero-copy path: GPU → OffscreenCanvas → ImageBitmap → drawImage
+        const bitmaps = engine!.renderSlotsToImageBitmap(indices, capturedRanges, capturedLogScale);
+        if (bitmaps && bitmaps.length > 0 && bitmaps[0]) {
+          for (let i = 0; i < bitmaps.length; i++) {
+            const offscreen = mainOffscreensRef.current[i];
+            if (!offscreen || !bitmaps[i]) continue;
+            const ctx = offscreen.getContext("2d");
+            if (ctx) ctx.drawImage(bitmaps[i], 0, 0);
+          }
+          setOffscreenVersion(v => v + 1);
+          return;
+        }
+
+        // Fallback: renderSlots (mapAsync + copy to ImageData)
         const offscreens = indices.map(i => mainOffscreensRef.current[i] || null);
         const imgDatas = indices.map(i => mainImgDatasRef.current[i] || null);
         const rendered = await engine!.renderSlots(indices, capturedRanges, offscreens, imgDatas, capturedLogScale);
