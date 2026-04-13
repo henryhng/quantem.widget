@@ -912,18 +912,22 @@ class Show3D(anywidget.AnyWidget):
         return frame
 
     def _on_diff_mode_change(self, change=None):
+        data = self._display_data
         if self.diff_mode == "off":
-            self.data_min = float(self._data.min())
-            self.data_max = float(self._data.max())
+            self.data_min = float(data.min())
+            self.data_max = float(data.max())
+        elif self.diff_mode == "previous":
+            # Vectorized diff: data[1:] - data[:-1]
+            diffs = data[1:] - data[:-1]
+            self.data_min = min(0.0, float(diffs.min()))
+            self.data_max = float(diffs.max())
+        elif self.diff_mode == "first":
+            diffs = data[1:] - data[0:1]
+            self.data_min = min(0.0, float(diffs.min()))
+            self.data_max = float(diffs.max())
         else:
-            # Recompute global range for diff frames
-            mins, maxs = [], []
-            for i in range(self.n_slices):
-                f = self._get_display_frame(i)
-                mins.append(float(f.min()))
-                maxs.append(float(f.max()))
-            self.data_min = min(mins)
-            self.data_max = max(maxs)
+            self.data_min = float(data.min())
+            self.data_max = float(data.max())
         self._update_all()
 
     def _update_all(self):
@@ -1050,7 +1054,7 @@ class Show3D(anywidget.AnyWidget):
             self.roi_plot_data = b""
 
     def _compute_roi_plot(self):
-        """Compute selected ROI mean for all frames."""
+        """Compute selected ROI mean for all frames. Uses display data (binned) for speed."""
         idx = self.roi_selected_idx
         if idx < 0 or idx >= len(self.roi_list):
             self.roi_plot_data = b""
@@ -1059,13 +1063,15 @@ class Show3D(anywidget.AnyWidget):
         if mask.sum() == 0:
             self.roi_plot_data = b""
             return
+        # Use _display_data (binned) — 4-16× less data than _data, same ROI result
+        data = self._display_data
         if self._use_torch:
             mask_t = torch.from_numpy(mask).to(self._device)
-            # Vectorized: (n_slices, n_masked_pixels) -> mean per frame
-            masked = self._data_torch[:, mask_t]
+            t = torch.from_numpy(data).to(self._device) if not hasattr(self, '_display_torch') else self._display_torch
+            masked = t[:, mask_t]
             means = masked.mean(dim=1).cpu().numpy().astype(np.float32)
         else:
-            means = np.array([float(self._data[i][mask].mean()) for i in range(self.n_slices)], dtype=np.float32)
+            means = np.array([float(data[i][mask].mean()) for i in range(self.n_slices)], dtype=np.float32)
         self.roi_plot_data = means.tobytes()
 
     # =========================================================================
