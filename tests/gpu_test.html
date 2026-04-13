@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head><title>GPU Colormap Test</title></head>
+<body style="background:#111;color:#0f0;font-family:monospace;padding:20px">
+<h2>WebGPU Colormap Shader Test</h2>
+<pre id="log"></pre>
+<canvas id="result" width="256" height="256" style="border:1px solid #333;image-rendering:pixelated"></canvas>
+<script>
+const log = (msg) => { document.getElementById('log').textContent += msg + '\n'; console.log(msg); };
+
+(async () => {
+    if (!navigator.gpu) { log('ERROR: No WebGPU'); return; }
+    const adapter = await navigator.gpu.requestAdapter();
+    const info = await adapter.requestAdapterInfo();
+    log('GPU: ' + (info.description || info.vendor || 'unknown'));
+    const device = await adapter.requestDevice();
+
+    const shaderCode = `
+struct Params { width: u32, height: u32, vmin: f32, vmax: f32, log_scale: u32, _pad: u32, };
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> data: array<f32>;
+@group(0) @binding(2) var<storage, read> lut: array<u32>;
+@group(0) @binding(3) var<storage, read_write> rgba: array<u32>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= params.width || gid.y >= params.height) { return; }
+  let idx = gid.y * params.width + gid.x;
+  var val = data[idx];
+  if (params.log_scale == 1u) { val = log(1.0 + max(val, 0.0)); }
+  let range = max(params.vmax - params.vmin, 1e-30);
+  let clipped = clamp(val, params.vmin, params.vmax);
+  let t = (clipped - params.vmin) / range;
+  let lutIdx = min(u32(t * 255.0), 255u);
+  let rgb = lut[lutIdx];
+  rgba[idx] = rgb | 0xFF000000u;
+}`;
+
+    const module = device.createShaderModule({ code: shaderCode });
+    const pipeline = device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint: 'main' } });
+
+    // Inferno LUT
+    const infernoPts = [[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[252,193,57],[252,255,164]];
+    const lut = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        const t = (i / 255) * (infernoPts.length - 1);
+        const idx = Math.floor(t), frac = t - idx;
+        const p0 = infernoPts[Math.min(idx, infernoPts.length-1)];
+        const p1 = infernoPts[Math.min(idx+1, infernoPts.length-1)];
+        const r = Math.round(p0[0] + frac*(p1[0]-p0[0]));
+        const g = Math.round(p0[1] + frac*(p1[1]-p0[1]));
+        const b = Math.round(p0[2] + frac*(p1[2]-p0[2]));
+        lut[i] = r | (g << 8) | (b << 16);
+    }
+
+    for (const [W, H, label] of [[256,256,'256x256'], [4096,4096,'4096x4096']]) {
+        const N = W * H;
+        const testData = new Float32Array(N);
+        // Create a gradient pattern
+        for (let y = 0; y < H; y++)
+            for (let x = 0; x < W; x++)
+                testData[y * W + x] = ((x + y) / (W + H)) * 10000;
+
+        const t0 = performance.now();
+
+        const dataBuf = device.createBuffer({ size: N*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(dataBuf, 0, testData);
+        const rgbaBuf = device.createBuffer({ size: N*4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const lutBuf = device.createBuffer({ size: 1024, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(lutBuf, 0, lut);
+        const paramsBuf = device.createBuffer({ size: 24, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        const p = new ArrayBuffer(24);
+        new Uint32Array(p)[0] = W; new Uint32Array(p)[1] = H;
+        new Float32Array(p)[2] = 0; new Float32Array(p)[3] = 10000;
+        new Uint32Array(p)[4] = 0; new Uint32Array(p)[5] = 0;
+        device.queue.writeBuffer(paramsBuf, 0, p);
+        const readBuf = device.createBuffer({ size: N*4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+
+        const bg = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [
+            {binding:0, resource:{buffer:paramsBuf}}, {binding:1, resource:{buffer:dataBuf}},
+            {binding:2, resource:{buffer:lutBuf}}, {binding:3, resource:{buffer:rgbaBuf}},
+        ]});
+
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline); pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(Math.ceil(W/16), Math.ceil(H/16));
+        pass.end();
+        enc.copyBufferToBuffer(rgbaBuf, 0, readBuf, 0, N*4);
+        device.queue.submit([enc.finish()]);
+
+        await readBuf.mapAsync(GPUMapMode.READ);
+        const out = new Uint8ClampedArray(readBuf.getMappedRange().slice(0));
+        readBuf.unmap();
+        const elapsed = performance.now() - t0;
+
+        let nz = 0;
+        for (let j = 0; j < Math.min(1000, out.length); j++) if (out[j] !== 0) nz++;
+
+        log(`${label}: ${elapsed.toFixed(0)}ms, nonzero=${nz}/1000`);
+        log(`  px[0]=[${out[0]},${out[1]},${out[2]},${out[3]}]`);
+        log(`  px[mid]=[${out[N*2]},${out[N*2+1]},${out[N*2+2]},${out[N*2+3]}]`);
+
+        // Render 256x256 result to canvas
+        if (W === 256) {
+            const canvas = document.getElementById('result');
+            const ctx = canvas.getContext('2d');
+            const imgData = ctx.createImageData(W, H);
+            imgData.data.set(out);
+            ctx.putImageData(imgData, 0, 0);
+            log('  Rendered to canvas ✓');
+        }
+
+        dataBuf.destroy(); rgbaBuf.destroy(); lutBuf.destroy(); paramsBuf.destroy(); readBuf.destroy();
+    }
+    log('\nDONE — shader works on this GPU');
+})();
+</script>
+</body>
+</html>

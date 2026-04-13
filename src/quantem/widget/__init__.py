@@ -19,6 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from quantem.widget.browse import Browse
     from quantem.widget.edit2d import Edit2D
     from quantem.widget.io import IO, IOResult
+    from quantem.widget.live import Live
     from quantem.widget.mark2d import Mark2D
     from quantem.widget.profile import profile
     from quantem.widget.show1d import Show1D
@@ -42,6 +43,7 @@ _EXPORTS = {
     "Edit2D": ("quantem.widget.edit2d", "Edit2D"),
     "IO": ("quantem.widget.io", "IO"),
     "IOResult": ("quantem.widget.io", "IOResult"),
+    "Live": ("quantem.widget.live", "Live"),
     "Mark2D": ("quantem.widget.mark2d", "Mark2D"),
     "Show1D": ("quantem.widget.show1d", "Show1D"),
     "Show2D": ("quantem.widget.show2d", "Show2D"),
@@ -79,6 +81,7 @@ __all__ = [
     "Edit2D",
     "IO",
     "IOResult",
+    "Live",
     "Mark2D",
     "profile",
     "Show1D",

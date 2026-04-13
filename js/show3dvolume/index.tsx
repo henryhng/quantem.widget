@@ -303,6 +303,8 @@ function Show3DVolume() {
   const [cmap, setCmap] = useModelState<string>("cmap");
   const [logScale, setLogScale] = useModelState<boolean>("log_scale");
   const [autoContrast, setAutoContrast] = useModelState<boolean>("auto_contrast");
+  const [traitVmin] = useModelState<number | null>("vmin");
+  const [traitVmax] = useModelState<number | null>("vmax");
   const [showControls] = useModelState<boolean>("show_controls");
   const [showStats] = useModelState<boolean>("show_stats");
   const [showCrosshair, setShowCrosshair] = useModelState<boolean>("show_crosshair");
@@ -917,6 +919,7 @@ function Show3DVolume() {
     const globalChanged = allFloats !== prev.allFloats || cmap !== prev.cmap ||
       logScale !== prev.logScale || autoContrast !== prev.autoContrast ||
       imageVminPct !== prev.imageVminPct || imageVmaxPct !== prev.imageVmaxPct ||
+      traitVmin !== prev.traitVmin || traitVmax !== prev.traitVmax ||
       nx !== prev.nx || ny !== prev.ny || nz !== prev.nz;
     const axisChanged = [
       globalChanged || sliceZ !== prev.sliceZ,  // axis 0 (XY) depends on sliceZ
@@ -935,13 +938,16 @@ function Show3DVolume() {
       const [sliceH, sliceW] = sliceDims[a];
       const processed = logScale ? applyLogScale(extractors[a]()) : extractors[a]();
       let vmin: number, vmax: number;
-      if (autoContrast) {
+      const hasAbsRange = traitVmin != null && traitVmax != null;
+      const rMin = hasAbsRange ? (logScale ? Math.log1p(Math.max(traitVmin!, 0)) : traitVmin!) : imageDataRange.min;
+      const rMax = hasAbsRange ? (logScale ? Math.log1p(Math.max(traitVmax!, 0)) : traitVmax!) : imageDataRange.max;
+      if (!hasAbsRange && autoContrast) {
         ({ vmin, vmax } = percentileClip(processed, 2, 98));
       } else if (imageVminPct > 0 || imageVmaxPct < 100) {
-        ({ vmin, vmax } = sliderRange(imageDataRange.min, imageDataRange.max, imageVminPct, imageVmaxPct));
+        ({ vmin, vmax } = sliderRange(rMin, rMax, imageVminPct, imageVmaxPct));
       } else {
-        vmin = imageDataRange.min;
-        vmax = imageDataRange.max;
+        vmin = rMin;
+        vmax = rMax;
       }
       const offscreen = sliceOffscreenRefs.current[a];
       const imgData = sliceImgDataRefs.current[a];
@@ -1025,8 +1031,8 @@ function Show3DVolume() {
       if (anyDiffChanged) setDiffStats(newDiffStats);
     }
 
-    prevCacheRef.current = { sliceX, sliceY, sliceZ, cmap, logScale, autoContrast, imageVminPct, imageVmaxPct, imageVminPctB, imageVmaxPctB, linkedContrast, diffVminPct, diffVmaxPct, allFloats, allFloatsB, allFloatsDiff, nx, ny, nz };
-  }, [allFloats, allFloatsB, allFloatsDiff, isDual, sliceX, sliceY, sliceZ, nx, ny, nz, cmap, logScale, autoContrast, sliceDims, imageVminPct, imageVmaxPct, imageDataRange, imageVminPctB, imageVmaxPctB, imageDataRangeB, linkedContrast, diffVminPct, diffVmaxPct]);
+    prevCacheRef.current = { sliceX, sliceY, sliceZ, cmap, logScale, autoContrast, imageVminPct, imageVmaxPct, imageVminPctB, imageVmaxPctB, linkedContrast, diffVminPct, diffVmaxPct, allFloats, allFloatsB, allFloatsDiff, nx, ny, nz, traitVmin, traitVmax };
+  }, [allFloats, allFloatsB, allFloatsDiff, isDual, sliceX, sliceY, sliceZ, nx, ny, nz, cmap, logScale, autoContrast, sliceDims, imageVminPct, imageVmaxPct, imageDataRange, imageVminPctB, imageVmaxPctB, imageDataRangeB, linkedContrast, diffVminPct, diffVmaxPct, traitVmin, traitVmax]);
 
   // -------------------------------------------------------------------------
   // Redraw slices with zoom/pan (cheap: just drawImage from cached offscreen)
@@ -1179,7 +1185,9 @@ function Show3DVolume() {
 
         if (showColorbar) {
           const lut = COLORMAPS[cmap] || COLORMAPS.inferno;
-          const { vmin, vmax } = sliderRange(imageDataRange.min, imageDataRange.max, imageVminPct, imageVmaxPct);
+          const cbMin = traitVmin != null && traitVmax != null ? (logScale ? Math.log1p(Math.max(traitVmin, 0)) : traitVmin) : imageDataRange.min;
+          const cbMax = traitVmin != null && traitVmax != null ? (logScale ? Math.log1p(Math.max(traitVmax, 0)) : traitVmax) : imageDataRange.max;
+          const { vmin, vmax } = sliderRange(cbMin, cbMax, imageVminPct, imageVmaxPct);
           const cssW = uiCanvas.width / DPR;
           const cssH = uiCanvas.height / DPR;
           uiCtx.save();
@@ -1905,13 +1913,16 @@ function Show3DVolume() {
       const [sliceH, sliceW] = sliceDims[a];
       const processed = logScale ? applyLogScale(sliceData[a]) : sliceData[a];
       let vmin: number, vmax: number;
-      if (autoContrast) {
+      const hasAbsR = traitVmin != null && traitVmax != null;
+      const eMin = hasAbsR ? (logScale ? Math.log1p(Math.max(traitVmin!, 0)) : traitVmin!) : imageDataRange.min;
+      const eMax = hasAbsR ? (logScale ? Math.log1p(Math.max(traitVmax!, 0)) : traitVmax!) : imageDataRange.max;
+      if (!hasAbsR && autoContrast) {
         ({ vmin, vmax } = percentileClip(processed, 2, 98));
       } else if (imageVminPct > 0 || imageVmaxPct < 100) {
-        ({ vmin, vmax } = sliderRange(imageDataRange.min, imageDataRange.max, imageVminPct, imageVmaxPct));
+        ({ vmin, vmax } = sliderRange(eMin, eMax, imageVminPct, imageVmaxPct));
       } else {
-        vmin = imageDataRange.min;
-        vmax = imageDataRange.max;
+        vmin = eMin;
+        vmax = eMax;
       }
       const offscreen = renderToOffscreen(processed, sliceW, sliceH, lut, vmin, vmax);
       if (!offscreen) continue;

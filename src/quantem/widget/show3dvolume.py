@@ -86,6 +86,8 @@ class Show3DVolume(anywidget.AnyWidget):
     cmap = traitlets.Unicode("inferno").tag(sync=True)
     log_scale = traitlets.Bool(False).tag(sync=True)
     auto_contrast = traitlets.Bool(False).tag(sync=True)
+    vmin = traitlets.Float(None, allow_none=True).tag(sync=True)
+    vmax = traitlets.Float(None, allow_none=True).tag(sync=True)
     # Scale bar
     pixel_size = traitlets.Float(0.0).tag(sync=True)
     scale_bar_visible = traitlets.Bool(True).tag(sync=True)
@@ -210,6 +212,8 @@ class Show3DVolume(anywidget.AnyWidget):
         show_diff: bool = False,
         log_scale: bool = False,
         auto_contrast: bool = False,
+        vmin: float | None = None,
+        vmax: float | None = None,
         disabled_tools: list[str] | None = None,
         disable_display: bool = False,
         disable_histogram: bool = False,
@@ -284,6 +288,8 @@ class Show3DVolume(anywidget.AnyWidget):
         self.show_diff = show_diff
         self.log_scale = log_scale
         self.auto_contrast = auto_contrast
+        self.vmin = vmin
+        self.vmax = vmax
         self.disabled_tools = self._build_disabled_tools(
             disabled_tools=disabled_tools,
             disable_display=disable_display,
@@ -404,6 +410,8 @@ class Show3DVolume(anywidget.AnyWidget):
             "cmap": self.cmap,
             "log_scale": self.log_scale,
             "auto_contrast": self.auto_contrast,
+            "vmin": self.vmin,
+            "vmax": self.vmax,
             "show_stats": self.show_stats,
             "show_controls": self.show_controls,
             "show_crosshair": self.show_crosshair,
@@ -457,7 +465,12 @@ class Show3DVolume(anywidget.AnyWidget):
             lines.append(f"Data B:   min={float(arr_b.min()):.4g}  max={float(arr_b.max()):.4g}  mean={float(arr_b.mean()):.4g}")
         cmap = self.cmap
         scale = "log" if self.log_scale else "linear"
-        contrast = "auto contrast" if self.auto_contrast else "manual contrast"
+        if self.vmin is not None and self.vmax is not None:
+            contrast = f"vmin={self.vmin:.4g}, vmax={self.vmax:.4g}"
+        elif self.auto_contrast:
+            contrast = "auto contrast"
+        else:
+            contrast = "manual contrast"
         display = f"{cmap} | {contrast} | {scale}"
         if self.show_fft:
             display += " | FFT"
@@ -538,7 +551,13 @@ class Show3DVolume(anywidget.AnyWidget):
     def _normalize_slice(self, slc: np.ndarray) -> np.ndarray:
         if self.log_scale:
             slc = np.log1p(np.maximum(slc, 0))
-        if self.auto_contrast:
+        if self.vmin is not None and self.vmax is not None:
+            vmin = float(self.vmin)
+            vmax = float(self.vmax)
+            if self.log_scale:
+                vmin = float(np.log1p(max(vmin, 0)))
+                vmax = float(np.log1p(max(vmax, 0)))
+        elif self.auto_contrast:
             vmin = float(np.percentile(slc, 2))
             vmax = float(np.percentile(slc, 98))
         else:

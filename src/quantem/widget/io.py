@@ -6,9 +6,13 @@ NPY/NPZ) into a lightweight IOResult that any widget accepts via duck typing.
 GPU-accelerated loaders (e.g. ``IO.arina()``) auto-detect the best backend.
 """
 
+import fnmatch
 import importlib
+import json
 import os
 import pathlib
+import threading
+import time as _time_module
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -142,7 +146,27 @@ class IOResult:
         """
         # Single-file metadata (no frame_metadata but has metadata)
         if not self.frame_metadata and self.metadata:
-            for k, v in self.metadata.items():
+            meta = self.metadata
+            if keys is not None:
+                # Show only requested keys (match by suffix)
+                for k in keys:
+                    matches = [
+                        (fp, meta[fp]) for fp in meta
+                        if fp.endswith("." + k) or fp == k
+                    ]
+                    for fp, v in matches:
+                        short = fp.rsplit(".", 1)[-1]
+                        print(f"  {short}: {_describe_format_value(fp, v)}")
+                if not any(fp.endswith("." + k) or fp == k for k in keys for fp in meta):
+                    print("  No matching keys found.")
+                return
+            # Curated summary for Velox EMDs (dotted keys from _flatten_metadata)
+            is_velox = any("." in k for k in list(meta.keys())[:10])
+            if is_velox:
+                _describe_velox_summary(meta, self.pixel_size, self.data.shape)
+                return
+            # Generic flat metadata (Arina HDF5 paths, etc.)
+            for k, v in meta.items():
                 short = k.rsplit("/", 1)[-1] if "/" in k else k
                 if isinstance(v, float):
                     v = f"{v:.6g}"
@@ -222,6 +246,117 @@ class IOResult:
                 vals.append(_fmt(fm.get(fp, "")).ljust(w))
             row += "  ".join(vals)
             print(row)
+
+
+def _describe_format_value(key: str, v) -> str:
+    """Format a metadata value with human-readable units."""
+    if v is None or v == "":
+        return "—"
+    k = key.lower()
+    if isinstance(v, (int, float)):
+        if "voltage" in k and not "extractor" in k:
+            return f"{v / 1000:.0f} kV" if v >= 1000 else f"{v} V"
+        if "convergence" in k:
+            return f"{v * 1000:.1f} mrad"
+        if "cameralength" in k:
+            return f"{v * 1000:.0f} mm"
+        if "dwelltime" in k:
+            return f"{v * 1e6:.1f} µs"
+        if "frametime" in k:
+            return f"{v:.1f} s"
+        if "screencurrent" in k or "lastmeasuredscreencurrent" in k:
+            return f"{v * 1e9:.2f} nA"
+        if "magnification" in k:
+            return f"{v:,.0f}×"
+        if "pixelsize" in k and isinstance(v, float) and v < 1e-6:
+            return f"{v * 1e10:.3f} Å"
+        if isinstance(v, float):
+            if abs(v) < 0.01 or abs(v) > 1e6:
+                return f"{v:.4g}"
+            return f"{v:.4f}"
+    return str(v)
+
+
+def _describe_velox_summary(meta: dict, pixel_size: float | None, shape: tuple) -> None:
+    """Print a curated Velox EMD metadata summary."""
+    shape_str = " × ".join(str(s) for s in shape)
+    print(f"  Image:          {shape_str}")
+    if pixel_size:
+        fov_nm = pixel_size * max(shape[-2:]) / 10
+        print(f"  Pixel size:     {pixel_size:.4f} Å ({pixel_size / 10:.4f} nm)")
+        print(f"  Field of view:  {fov_nm:.1f} nm")
+
+    # Instrument
+    instrument = meta.get("Instrument.InstrumentModel", "")
+    inst_class = meta.get("Instrument.InstrumentClass", "")
+    source = meta.get("Acquisition.SourceType", "")
+    if instrument:
+        parts = [instrument]
+        if inst_class and inst_class != instrument:
+            parts.append(inst_class)
+        if source:
+            parts.append(source)
+        print(f"  Instrument:     {' / '.join(parts)}")
+
+    # Key optics
+    rows = [
+        ("Voltage", "Optics.AccelerationVoltage"),
+        ("Convergence", "Optics.BeamConvergence"),
+        ("Camera length", "Optics.CameraLength"),
+        ("Spot size", "Optics.SpotIndex"),
+        ("Screen current", "Optics.ScreenCurrent"),
+        ("Magnification", "CustomProperties.StemMagnification"),
+    ]
+    for label, key in rows:
+        v = meta.get(key)
+        if v is not None:
+            print(f"  {label + ':':<18}{_describe_format_value(key, v)}")
+
+    # Scan
+    dwell = meta.get("Scan.DwellTime")
+    frame_time = meta.get("Scan.FrameTime")
+    scan_w = meta.get("Scan.ScanSize.width")
+    scan_h = meta.get("Scan.ScanSize.height")
+    if dwell is not None:
+        line = f"  Dwell time:     {_describe_format_value('dwelltime', dwell)}"
+        if frame_time:
+            line += f"  (frame: {frame_time:.1f} s)"
+        print(line)
+    if scan_w and scan_h:
+        print(f"  Scan size:      {scan_w} × {scan_h}")
+
+    # Detector
+    detector = meta.get("BinaryResult.Detector", "")
+    det_idx = meta.get("BinaryResult.DetectorIndex")
+    if detector:
+        det_line = f"  Detector:       {detector}"
+        if det_idx is not None:
+            inner = meta.get(f"Detectors.Detector-{det_idx}.CollectionAngleRange.begin")
+            outer = meta.get(f"Detectors.Detector-{det_idx}.CollectionAngleRange.end")
+            if inner is not None and outer is not None:
+                det_line += f" ({float(inner) * 1000:.0f}–{float(outer) * 1000:.0f} mrad)"
+        print(det_line)
+
+    # Sample
+    sample = meta.get("Sample.SampleId", "")
+    if sample:
+        print(f"  Sample:         {sample}")
+
+    # Stage
+    stage_x = meta.get("Stage.Position.x")
+    stage_y = meta.get("Stage.Position.y")
+    stage_z = meta.get("Stage.Position.z")
+    alpha = meta.get("Stage.AlphaTilt")
+    if stage_x is not None:
+        pos = f"x={float(stage_x)*1e6:.1f}, y={float(stage_y)*1e6:.1f}, z={float(stage_z)*1e6:.0f} µm"
+        if alpha is not None and abs(float(alpha)) > 0.001:
+            pos += f"  α={float(alpha)*1000:.1f} mrad"
+        print(f"  Stage:          {pos}")
+
+    # C2 aperture
+    c2_size = meta.get("Apertures.C2.Diameter")
+    if c2_size:
+        print(f"  C2 aperture:    {float(c2_size) * 1e6:.0f} µm")
 
 
 # =========================================================================
@@ -339,6 +474,147 @@ def _load_emd(
             raise ValueError(f"dataset_path '{ds_path}' is not an array dataset in EMD file: {path}")
         arr = np.asarray(ds)
     return arr
+
+
+# =========================================================================
+# Velox EMD fast loader (direct h5py, no rsciio overhead)
+# =========================================================================
+
+
+def _is_velox_emd(h5f) -> bool:
+    """Check if an HDF5 file is a Velox EMD by looking for the Version dataset."""
+    try:
+        ver_ds = h5f.get("Version")
+        if ver_ds is None:
+            return False
+        ver_raw = ver_ds[0]
+        if isinstance(ver_raw, bytes):
+            ver_str = ver_raw.decode("utf-8", errors="ignore")
+        else:
+            ver_str = str(ver_raw)
+        return "Velox" in ver_str or "velox" in ver_str
+    except Exception:
+        return False
+
+
+def _parse_velox_metadata(meta_ds) -> dict:
+    """Parse the Velox JSON metadata blob from a Metadata dataset."""
+    raw = meta_ds[:].tobytes().rstrip(b"\x00")
+    if not raw:
+        return {}
+    parsed = json.loads(raw.decode("utf-8", errors="ignore"))
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _flatten_metadata(d: dict, prefix: str = "") -> dict:
+    """Flatten a nested dict into dotted-path keys for IOResult.metadata.
+
+    Velox stores numbers as JSON strings (e.g. ``"300000"``). This function
+    auto-converts purely numeric strings to int or float so callers can
+    compare without casting.
+    """
+    flat = {}
+    for k, v in d.items():
+        key = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            flat.update(_flatten_metadata(v, key))
+        elif isinstance(v, str) and v:
+            # Auto-convert numeric strings
+            try:
+                flat[key] = int(v)
+            except ValueError:
+                try:
+                    flat[key] = float(v)
+                except ValueError:
+                    flat[key] = v
+        else:
+            flat[key] = v
+    return flat
+
+
+def _extract_velox_pixel_size(meta: dict) -> tuple[float | None, str | None]:
+    """Extract pixel size in Å from Velox metadata. Returns (pixel_size_angstrom, units)."""
+    br = meta.get("BinaryResult", {})
+    ps = br.get("PixelSize", {})
+    width_str = ps.get("width")
+    if not width_str:
+        return None, None
+    try:
+        pixel_size_m = float(width_str)
+    except (ValueError, TypeError):
+        return None, None
+    if pixel_size_m <= 0:
+        return None, None
+    pixel_size_angstrom = pixel_size_m * 1e10
+    return pixel_size_angstrom, "Å"
+
+
+def _load_velox_emd(path: pathlib.Path) -> IOResult | None:
+    """Fast-path loader for Velox EMD files.
+
+    Returns IOResult with full metadata, or None if the file is not Velox format.
+    Reads uint16 directly into float32 (no float64 intermediate).
+    """
+    if not _HAS_H5PY:
+        return None
+    with h5py.File(path, "r") as h5f:
+        if not _is_velox_emd(h5f):
+            return None
+        image_group = h5f.get("Data/Image")
+        if image_group is None:
+            return None
+        uuids = list(image_group.keys())
+        if not uuids:
+            return None
+        # Read image data — first UUID with a Data dataset
+        data_arr = None
+        meta_json = {}
+        for uuid in uuids:
+            grp = image_group[uuid]
+            ds = grp.get("Data")
+            if ds is None:
+                continue
+            # Read directly into float32 — avoids uint16→float64→float32 double alloc
+            data_arr = np.empty(ds.shape, dtype=np.float32)
+            ds.read_direct(data_arr)
+            # Parse metadata from the same UUID
+            meta_ds = grp.get("Metadata")
+            if meta_ds is not None:
+                try:
+                    meta_json = _parse_velox_metadata(meta_ds)
+                except Exception:
+                    pass
+            break
+        if data_arr is None:
+            return None
+    # Squeeze trailing singleton dims: (H, W, 1) → (H, W)
+    while data_arr.ndim > 2 and data_arr.shape[-1] == 1:
+        data_arr = data_arr[..., 0]
+    # Extract pixel size
+    pixel_size, units = _extract_velox_pixel_size(meta_json)
+    # Build flat metadata dict for describe()
+    flat_meta = _flatten_metadata(meta_json)
+    # Extract a readable title from metadata
+    sample_block = meta_json.get("Sample", {})
+    sample_id = sample_block.get("SampleId", "") if isinstance(sample_block, dict) else ""
+    br_block = meta_json.get("BinaryResult", {})
+    detector = br_block.get("Detector", "") if isinstance(br_block, dict) else ""
+    title = path.stem
+    if sample_id:
+        title = f"{sample_id} — {path.stem}"
+    labels = []
+    if data_arr.ndim == 3:
+        labels = [f"{path.stem}[{i}]" for i in range(data_arr.shape[0])]
+    return IOResult(
+        data=data_arr,
+        pixel_size=pixel_size,
+        units=units,
+        title=title,
+        labels=labels,
+        metadata=flat_meta,
+    )
 
 
 def _load_npy(path: pathlib.Path) -> np.ndarray:
@@ -630,7 +906,16 @@ def _stack_results(
             f"{_format_shape_summary(files_by_shape)}\n\n"
             f"Use shape= to select one size, e.g. shape={most_common}"
         )
-    stack = np.stack(frames, axis=0).astype(np.float32)
+    # Pre-allocate contiguous output to avoid np.stack + astype double copy
+    n = len(frames)
+    h, w = frames[0].shape
+    all_float32 = all(f.dtype == np.float32 for f in frames)
+    if all_float32:
+        stack = np.empty((n, h, w), dtype=np.float32)
+        for i, f in enumerate(frames):
+            stack[i] = f
+    else:
+        stack = np.stack(frames, axis=0).astype(np.float32)
     return IOResult(
         data=stack,
         pixel_size=pixel_size,
@@ -963,7 +1248,13 @@ class IO:
                 return IOResult(data=stack[0], title=path.stem, labels=labels)
             return IOResult(data=stack, title=path.stem, labels=labels)
         if ext in {".emd", ".h5", ".hdf5"}:
-            # Try rsciio first (better metadata extraction for Velox EMD)
+            # Fast path: direct h5py reader for Velox EMD (no rsciio overhead,
+            # reads uint16→float32 directly, full metadata extraction)
+            if dataset_path is None:
+                velox_result = _load_velox_emd(path)
+                if velox_result is not None:
+                    return velox_result
+            # Try rsciio for non-Velox EMD or explicit dataset_path
             try:
                 return _load_rsciio(path)
             except Exception:
@@ -1071,12 +1362,19 @@ class IO:
                 result = _apply_bin_factor(result, bin_factor)
             return result
 
+        import time as _time
         path = pathlib.Path(source)
         if not path.is_file():
             raise ValueError(f"Path does not exist: {path}")
+        t0 = _time.perf_counter()
         result = IO._read_single_file(path, dataset_path=dataset_path)
         if bin_factor is not None and bin_factor > 1:
             result = _apply_bin_factor(result, bin_factor)
+        elapsed = (_time.perf_counter() - t0) * 1000
+        shape_str = "×".join(str(s) for s in result.data.shape)
+        mem = _format_memory(result.data.nbytes)
+        ps = f"  pixel_size={result.pixel_size:.4f} Å" if result.pixel_size else ""
+        print(f"IO.file: {shape_str} {mem} in {elapsed:.0f} ms{ps}")
         return result
 
     @staticmethod
@@ -1185,6 +1483,8 @@ class IO:
             if detected_exts is not None:
                 files = [f for f in files if f.suffix.lower() in detected_exts]
 
+        import time as _time
+        t0 = _time.perf_counter()
         file_iter = files
         if len(files) > 1:
             file_iter = tqdm(files, desc="files", leave=False)
@@ -1199,6 +1499,12 @@ class IO:
         result = _stack_results(results, title=folder.name, paths=paths)
         if bin_factor is not None and bin_factor > 1:
             result = _apply_bin_factor(result, bin_factor)
+        elapsed = (_time.perf_counter() - t0) * 1000
+        shape_str = "×".join(str(s) for s in result.data.shape)
+        mem = _format_memory(result.data.nbytes)
+        n = len(results)
+        ps = f"  pixel_size={result.pixel_size:.4f} Å" if result.pixel_size else ""
+        print(f"IO.folder: {shape_str} {mem} ({n} files) in {elapsed:.0f} ms ({elapsed/max(n,1):.0f} ms/file){ps}")
         return result
 
     @staticmethod
@@ -1883,5 +2189,240 @@ class IO:
             data=stack, title=title, labels=labels, frame_metadata=frame_meta,
         )
 
+    @staticmethod
+    def watch(
+        folder: "str | pathlib.Path",
+        widget,
+        *,
+        pattern: str = "*",
+        interval: float = 2.0,
+        recursive: bool = False,
+        dataset_path: str | None = None,
+    ) -> "FileWatcher":
+        """Watch a folder for new files and auto-update a widget.
+
+        Monitors ``folder`` for new files matching ``pattern``. When a new
+        file appears, loads it via :meth:`IO.file` and pushes the updated
+        image set to ``widget`` via ``set_image()``. Handles mixed image
+        sizes (Show2D auto-resizes to the largest).
+
+        Parameters
+        ----------
+        folder : str or pathlib.Path
+            Directory to monitor.
+        widget : Show2D or Show3D
+            Widget to update. Must have a ``set_image()`` method.
+        pattern : str, default "*"
+            Glob pattern for file filtering (e.g. ``"*.emd"``, ``"*.tiff"``).
+        interval : float, default 2.0
+            Polling interval in seconds.
+        recursive : bool, default False
+            Search subdirectories for matching files.
+        dataset_path : str, optional
+            Forwarded to :meth:`IO.file` for HDF5/EMD files.
+
+        Returns
+        -------
+        FileWatcher
+            Handle with ``.stop()`` to end watching, ``.files`` for the
+            current file list, ``.n_files`` for the count.
+
+        Examples
+        --------
+        >>> w = Show2D(IO.file("first.emd"))
+        >>> watcher = IO.watch("./data/", w, pattern="*.emd", interval=2)
+        >>> # New EMD files auto-appear in the gallery
+        >>> watcher.stop()  # stop watching
+        """
+        folder = pathlib.Path(folder)
+        if not folder.is_dir():
+            raise ValueError(f"Folder does not exist: {folder}")
+        if not hasattr(widget, "set_image"):
+            raise TypeError(
+                f"{type(widget).__name__} has no set_image() method. "
+                f"IO.watch requires a widget with set_image()."
+            )
+        watcher = FileWatcher(
+            folder=folder,
+            widget=widget,
+            pattern=pattern,
+            interval=interval,
+            recursive=recursive,
+            dataset_path=dataset_path,
+        )
+        watcher.start()
+        return watcher
+
     # Alias: IO.arina() → IO.arina_file() for backwards compatibility
     arina = arina_file
+
+
+class FileWatcher:
+    """Watches a folder for new files and updates a widget.
+
+    Created by :meth:`IO.watch`. Call ``.stop()`` to end watching.
+    """
+
+    _SUPPORTED_EXTS = {
+        ".png", ".jpg", ".jpeg", ".bmp",
+        ".tif", ".tiff",
+        ".emd", ".h5", ".hdf5",
+        ".dm3", ".dm4",
+        ".mrc",
+        ".ser",
+        ".npy", ".npz",
+    }
+
+    def __init__(
+        self,
+        folder: pathlib.Path,
+        widget,
+        pattern: str,
+        interval: float,
+        recursive: bool,
+        dataset_path: str | None,
+    ):
+        self._folder = folder
+        self._widget = widget
+        self._pattern = pattern
+        self._interval = interval
+        self._recursive = recursive
+        self._dataset_path = dataset_path
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._files: list[pathlib.Path] = []
+        self._images: list[np.ndarray] = []
+        self._labels: list[str] = []
+        self._known: set[pathlib.Path] = set()
+
+    def _scan_files(self) -> list[pathlib.Path]:
+        """Find all matching files, sorted by modification time."""
+        if self._recursive:
+            candidates = self._folder.rglob(self._pattern)
+        else:
+            candidates = self._folder.glob(self._pattern)
+        found = [
+            p for p in candidates
+            if p.is_file() and p.suffix.lower() in self._SUPPORTED_EXTS
+        ]
+        found.sort(key=lambda p: p.stat().st_mtime)
+        return found
+
+    def _load_and_push(self, new_files: list[pathlib.Path]) -> None:
+        """Load new files and update the widget."""
+        for path in new_files:
+            try:
+                result = IO._read_single_file(
+                    path, dataset_path=self._dataset_path,
+                )
+            except Exception as exc:
+                print(f"IO.watch: failed to load {path.name}: {exc}")
+                continue
+            arr = result.data
+            if arr.ndim == 2:
+                self._images.append(arr)
+                self._labels.append(result.title or path.stem)
+            elif arr.ndim == 3:
+                for j in range(arr.shape[0]):
+                    self._images.append(arr[j])
+                    label = (
+                        result.labels[j]
+                        if j < len(result.labels)
+                        else f"{path.stem}[{j}]"
+                    )
+                    self._labels.append(label)
+            self._files.append(path)
+            self._known.add(path)
+
+        if self._images:
+            # Show3D expects a 3D numpy array; Show2D expects a list of 2D
+            if hasattr(self._widget, "n_slices"):
+                stack = np.stack(self._images)
+                self._widget.set_image(stack, labels=list(self._labels))
+            else:
+                self._widget.set_image(
+                    list(self._images), labels=list(self._labels),
+                )
+
+    def _is_stable(self, path: pathlib.Path, wait: float = 0.5) -> bool:
+        """Check if file size is stable (not still being written)."""
+        try:
+            size1 = path.stat().st_size
+            if size1 == 0:
+                return False
+            _time_module.sleep(wait)
+            size2 = path.stat().st_size
+            return size1 == size2
+        except OSError:
+            return False
+
+    def _poll_loop(self) -> None:
+        """Background thread: poll for new files."""
+        while not self._stop_event.is_set():
+            current = self._scan_files()
+            new = [p for p in current if p not in self._known]
+            if new:
+                # Wait for files to finish writing before loading
+                stable = [p for p in new if self._is_stable(p)]
+                if stable:
+                    with self._lock:
+                        self._load_and_push(stable)
+                        count = len(self._images)
+                    print(f"IO.watch: +{len(stable)} file(s), {count} image(s) total")
+            self._stop_event.wait(self._interval)
+
+    def start(self) -> None:
+        """Start watching (called automatically by IO.watch)."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        # Load existing files first (synchronously, on calling thread)
+        initial = self._scan_files()
+        if initial:
+            self._load_and_push(initial)
+            print(
+                f"IO.watch: loaded {len(initial)} existing file(s), "
+                f"{len(self._images)} image(s)"
+            )
+        self._thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="io-watch",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop watching."""
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    @property
+    def files(self) -> list[pathlib.Path]:
+        """List of files loaded so far."""
+        with self._lock:
+            return list(self._files)
+
+    @property
+    def n_files(self) -> int:
+        """Number of files loaded so far."""
+        with self._lock:
+            return len(self._files)
+
+    @property
+    def n_images(self) -> int:
+        """Number of images loaded so far (a multi-frame file counts multiple)."""
+        with self._lock:
+            return len(self._images)
+
+    @property
+    def running(self) -> bool:
+        """Whether the watcher is still running."""
+        return self._thread is not None and self._thread.is_alive()
+
+    def __repr__(self) -> str:
+        status = "running" if self.running else "stopped"
+        return (
+            f"FileWatcher({self._folder.name!r}, "
+            f"pattern={self._pattern!r}, "
+            f"{self.n_images} images, {status})"
+        )

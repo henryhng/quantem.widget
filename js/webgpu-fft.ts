@@ -266,6 +266,116 @@ export class WebGPUFFT {
     for (let i = 0; i < paddedSize; i++) { realResult[i] = result[i * 2]; imagResult[i] = result[i * 2 + 1]; }
     return { real: realResult, imag: imagResult };
   }
+  /**
+   * Batched 2D FFT: compute N forward FFTs with pipelined GPU submissions.
+   * All images must have the same dimensions. Each image gets its own
+   * submit (required because the params uniform changes per-pass), but
+   * all readbacks are batched into a single Promise.all at the end.
+   */
+  async fft2DBatch(
+    images: { real: Float32Array; imag: Float32Array }[],
+    width: number, height: number,
+  ): Promise<{ real: Float32Array; imag: Float32Array }[]> {
+    await this.init();
+    const n = images.length;
+    if (n === 0) return [];
+    const paddedWidth = nextPow2(width), paddedHeight = nextPow2(height);
+    const needsPadding = paddedWidth !== width || paddedHeight !== height;
+    const log2Width = Math.log2(paddedWidth), log2Height = Math.log2(paddedHeight);
+    const paddedSize = paddedWidth * paddedHeight;
+    const originalSize = width * height;
+    const byteSize = paddedSize * 2 * 4;
+    const workgroupsX = Math.ceil(paddedWidth / 16), workgroupsY = Math.ceil(paddedHeight / 16);
+    const inverseVal = -1.0;
+
+    // Shared params buffer — safe because we submit per-image
+    const paramsBuffer = this.device.createBuffer({ size: 24, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    const readBuffers: GPUBuffer[] = [];
+    const dataBuffers: GPUBuffer[] = [];
+
+    // Submit all FFTs — GPU pipelines them internally
+    for (let i = 0; i < n; i++) {
+      const { real: realData, imag: imagData } = images[i];
+      let workReal: Float32Array, workImag: Float32Array;
+      if (needsPadding) {
+        workReal = new Float32Array(paddedSize); workImag = new Float32Array(paddedSize);
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+          workReal[y * paddedWidth + x] = realData[y * width + x];
+          workImag[y * paddedWidth + x] = imagData[y * width + x];
+        }
+      } else { workReal = realData; workImag = imagData; }
+
+      const complexData = new Float32Array(paddedSize * 2);
+      for (let j = 0; j < paddedSize; j++) { complexData[j * 2] = workReal[j]; complexData[j * 2 + 1] = workImag[j]; }
+
+      const dataBuffer = this.device.createBuffer({ size: byteSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      this.device.queue.writeBuffer(dataBuffer, 0, complexData);
+      dataBuffers.push(dataBuffer);
+
+      const readBuffer = this.device.createBuffer({ size: byteSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      readBuffers.push(readBuffer);
+
+      // Run FFT passes — each runPass does writeBuffer+submit atomically
+      const runPass = (pipeline: GPUComputePipeline) => {
+        const bindGroup = this.device.createBindGroup({
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer: paramsBuffer } }, { binding: 1, resource: { buffer: dataBuffer } }],
+        });
+        const enc = this.device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipeline); pass.setBindGroup(0, bindGroup);
+        pass.dispatchWorkgroups(workgroupsX, workgroupsY); pass.end();
+        this.device.queue.submit([enc.finish()]);
+      };
+
+      const params = new ArrayBuffer(24);
+      const paramsU32 = new Uint32Array(params);
+      const paramsF32 = new Float32Array(params);
+
+      paramsU32[0] = paddedWidth; paramsU32[1] = paddedHeight; paramsU32[2] = log2Width;
+      paramsU32[3] = 0; paramsF32[4] = inverseVal; paramsU32[5] = 1;
+      this.device.queue.writeBuffer(paramsBuffer, 0, params); runPass(this.pipelines2D!.bitReverseRows);
+      for (let stage = 0; stage < log2Width; stage++) { paramsU32[3] = stage; this.device.queue.writeBuffer(paramsBuffer, 0, params); runPass(this.pipelines2D!.butterflyRows); }
+
+      paramsU32[2] = log2Height; paramsU32[3] = 0; paramsU32[5] = 0;
+      this.device.queue.writeBuffer(paramsBuffer, 0, params); runPass(this.pipelines2D!.bitReverseCols);
+      for (let stage = 0; stage < log2Height; stage++) { paramsU32[3] = stage; this.device.queue.writeBuffer(paramsBuffer, 0, params); runPass(this.pipelines2D!.butterflyCols); }
+
+      // Copy to read buffer
+      const copyEnc = this.device.createCommandEncoder();
+      copyEnc.copyBufferToBuffer(dataBuffer, 0, readBuffer, 0, byteSize);
+      this.device.queue.submit([copyEnc.finish()]);
+    }
+
+    // Batched readback — one sync point for all images
+    await Promise.all(readBuffers.map(buf => buf.mapAsync(GPUMapMode.READ)));
+
+    const results: { real: Float32Array; imag: Float32Array }[] = [];
+    for (let i = 0; i < n; i++) {
+      const result = new Float32Array(readBuffers[i].getMappedRange().slice(0));
+      readBuffers[i].unmap();
+      dataBuffers[i].destroy();
+      readBuffers[i].destroy();
+
+      if (needsPadding) {
+        const realResult = new Float32Array(originalSize), imagResult = new Float32Array(originalSize);
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+          realResult[y * width + x] = result[(y * paddedWidth + x) * 2];
+          imagResult[y * width + x] = result[(y * paddedWidth + x) * 2 + 1];
+        }
+        results.push({ real: realResult, imag: imagResult });
+      } else {
+        const realResult = new Float32Array(paddedSize), imagResult = new Float32Array(paddedSize);
+        for (let i2 = 0; i2 < paddedSize; i2++) { realResult[i2] = result[i2 * 2]; imagResult[i2] = result[i2 * 2 + 1]; }
+        results.push({ real: realResult, imag: imagResult });
+      }
+    }
+
+    paramsBuffer.destroy();
+    return results;
+  }
+
   destroy(): void { this.initialized = false; }
 }
 

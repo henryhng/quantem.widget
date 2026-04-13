@@ -1,5 +1,22 @@
 # changelog
 
+## v0.0.16 (unreleased)
+
+### Show2D
+- **WebGPU-accelerated colormap** — histogram slider drag on 12 × 4096×4096 gallery now runs a WGSL compute shader instead of a CPU pixel loop; ~300× faster (1450ms → <5ms for 201M pixels); auto-detects WebGPU, falls back to CPU seamlessly
+- **batched gallery FFT** — gallery mode submits all FFTs to WebGPU with batched readback instead of 12 sequential GPU↔CPU round-trips; pulsing loading overlay shows `"FFT 12× batched (WebGPU)"` while computing
+- **FFT loading indicator** — pulsing overlay on FFT panels during compute with backend info (WebGPU / CPU Worker) and per-image progress; images are interactive immediately while FFTs compute in background
+
+### IO
+- **Velox EMD fast path** — `IO.file()` and `IO.folder()` detect Velox EMD files and read them directly with h5py, bypassing rsciio; reads uint16→float32 with no float64 intermediate (halves peak memory); 13ms per 4096×4096 image
+- **full Velox metadata extraction** — 361 metadata fields parsed from the HDF5 JSON blob: voltage, convergence angle, camera length, dwell time, detector collection angles, stage position, magnification, sample ID, instrument model; all stored in `IOResult.metadata` as numeric types (auto-converted from Velox string encoding)
+- **`describe()` for Velox EMDs** — curated summary with human-readable units (kV, mrad, mm, µs, nA); `describe(keys=["DwellTime", "AccelerationVoltage"])` for specific fields
+- **timing auto-print** — `IO.file()`, `IO.folder()`, and `Show2D()` print shape, memory, and elapsed time automatically; no manual benchmarking code needed in notebooks
+
+### Show2D (constructor)
+- **deferred `_data_original` copy** — originals stored as views into `_data` (not independent copies) until a rotation is applied; saves 800MB for a 12 × 4K gallery
+- **vectorized stats** — `np.mean(data, axis=(1,2))` instead of per-image loop
+
 ## v0.0.15 (2026-03-22)
 
 ### New widgets

@@ -1185,3 +1185,190 @@ def test_arina_file_list_shape_no_match(tmp_path):
     path_a, _ = _make_arina_files(dir_a, n_frames=4, det_rows=32, det_cols=32)
     with pytest.raises(ValueError, match="No scans match"):
         IO.arina_file([path_a, path_a], det_bin=2, backend="cpu", shape=(10, 10))
+
+
+# ── IO.watch ────────────────────────────────────────────────────────────
+
+import time as _time
+
+from quantem.widget.io import FileWatcher
+
+
+def test_watch_loads_existing_files(tmp_path):
+    """IO.watch picks up files already in the folder on start."""
+    from quantem.widget import Show2D
+    for i in range(3):
+        np.save(tmp_path / f"img_{i}.npy", np.random.rand(16, 16).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_files == 3
+        assert watcher.n_images == 3
+        assert w.n_images == 3
+    finally:
+        watcher.stop()
+
+
+def test_watch_detects_new_file(tmp_path):
+    """IO.watch detects a new file written after start and updates widget."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "img_0.npy", np.random.rand(16, 16).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_images == 1
+        # Write a new file
+        np.save(tmp_path / "img_1.npy", np.random.rand(16, 16).astype(np.float32))
+        # Wait for the watcher to pick it up
+        _time.sleep(1.5)
+        assert watcher.n_images == 2
+        assert w.n_images == 2
+    finally:
+        watcher.stop()
+
+
+def test_watch_mixed_sizes(tmp_path):
+    """IO.watch handles images of different sizes."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "small.npy", np.random.rand(16, 16).astype(np.float32))
+    np.save(tmp_path / "large.npy", np.random.rand(64, 64).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_images == 2
+        assert w.n_images == 2
+        # Show2D resizes to largest — both images are 64x64
+        assert w.height == 64
+        assert w.width == 64
+    finally:
+        watcher.stop()
+
+
+def test_watch_pattern_filter(tmp_path):
+    """IO.watch only loads files matching the pattern."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "keep.npy", np.random.rand(16, 16).astype(np.float32))
+    np.savez(tmp_path / "skip.npz", data=np.random.rand(16, 16).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_files == 1
+        assert watcher.n_images == 1
+    finally:
+        watcher.stop()
+
+
+def test_watch_stop(tmp_path):
+    """FileWatcher.stop() ends the background thread."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "img.npy", np.random.rand(8, 8).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    assert watcher.running
+    watcher.stop()
+    assert not watcher.running
+
+
+def test_watch_nonexistent_folder():
+    """IO.watch raises ValueError for missing folder."""
+    from quantem.widget import Show2D
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    with pytest.raises(ValueError, match="does not exist"):
+        IO.watch("/nonexistent/folder", w, pattern="*.npy")
+
+
+def test_watch_no_set_image():
+    """IO.watch raises TypeError for widget without set_image."""
+    class Dummy:
+        pass
+    with pytest.raises(TypeError, match="set_image"):
+        IO.watch(".", Dummy(), pattern="*.npy")
+
+
+def test_watch_repr(tmp_path):
+    """FileWatcher has a useful repr."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "img.npy", np.random.rand(8, 8).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        r = repr(watcher)
+        assert "running" in r
+        assert "*.npy" in r
+        assert "1 images" in r
+    finally:
+        watcher.stop()
+
+
+def test_watch_files_property(tmp_path):
+    """FileWatcher.files returns loaded file paths."""
+    from quantem.widget import Show2D
+    p = tmp_path / "data.npy"
+    np.save(p, np.random.rand(8, 8).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        files = watcher.files
+        assert len(files) == 1
+        assert files[0].name == "data.npy"
+    finally:
+        watcher.stop()
+
+
+def test_watch_multiple_new_files(tmp_path):
+    """IO.watch picks up multiple files written after start."""
+    from quantem.widget import Show2D
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_images == 0
+        # Write 3 files
+        for i in range(3):
+            np.save(
+                tmp_path / f"new_{i}.npy",
+                np.random.rand(32, 32).astype(np.float32),
+            )
+        _time.sleep(3.0)
+        assert watcher.n_images == 3
+        assert w.n_images == 3
+    finally:
+        watcher.stop()
+
+
+def test_watch_with_show3d(tmp_path):
+    """IO.watch works with Show3D, stacking images as frames."""
+    from quantem.widget import Show3D
+    np.save(tmp_path / "frame_0.npy", np.random.rand(16, 16).astype(np.float32))
+    np.save(tmp_path / "frame_1.npy", np.random.rand(16, 16).astype(np.float32))
+    w = Show3D(np.random.rand(2, 8, 8).astype(np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert watcher.n_images == 2
+        assert w.n_slices == 2
+        # Write a third frame
+        np.save(tmp_path / "frame_2.npy", np.random.rand(16, 16).astype(np.float32))
+        _time.sleep(1.5)
+        assert watcher.n_images == 3
+        assert w.n_slices == 3
+    finally:
+        watcher.stop()
+
+
+def test_watch_new_file_mixed_size(tmp_path):
+    """IO.watch handles a new file with different size than existing ones."""
+    from quantem.widget import Show2D
+    np.save(tmp_path / "img_0.npy", np.random.rand(16, 16).astype(np.float32))
+    w = Show2D(np.zeros((4, 4), dtype=np.float32))
+    watcher = IO.watch(tmp_path, w, pattern="*.npy", interval=0.2)
+    try:
+        assert w.height == 16
+        assert w.width == 16
+        # Write a bigger image
+        np.save(tmp_path / "img_1.npy", np.random.rand(64, 64).astype(np.float32))
+        _time.sleep(1.5)
+        assert watcher.n_images == 2
+        # Show2D should resize to largest
+        assert w.height == 64
+        assert w.width == 64
+    finally:
+        watcher.stop()

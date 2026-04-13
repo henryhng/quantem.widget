@@ -560,3 +560,60 @@ def test_show3dvolume_show_diff_single_mode():
     assert w.show_diff is True
     assert w.dual_mode is False
 
+
+# ── vmin/vmax ──────────────────────────────────────────────────────────
+
+
+def test_show3dvolume_vmin_vmax_default_none():
+    data = np.random.rand(8, 8, 8).astype(np.float32)
+    w = Show3DVolume(data)
+    assert w.vmin is None
+    assert w.vmax is None
+
+
+def test_show3dvolume_vmin_vmax_constructor():
+    data = np.random.rand(8, 8, 8).astype(np.float32) * 1000
+    w = Show3DVolume(data, vmin=100, vmax=800)
+    assert w.vmin == pytest.approx(100)
+    assert w.vmax == pytest.approx(800)
+
+
+def test_show3dvolume_vmin_vmax_state_dict_roundtrip():
+    data = np.random.rand(8, 8, 8).astype(np.float32) * 1000
+    w = Show3DVolume(data, vmin=50, vmax=900)
+    sd = w.state_dict()
+    assert sd["vmin"] == pytest.approx(50)
+    assert sd["vmax"] == pytest.approx(900)
+    w2 = Show3DVolume(data, state=sd)
+    assert w2.vmin == pytest.approx(50)
+    assert w2.vmax == pytest.approx(900)
+
+
+def test_show3dvolume_vmin_vmax_normalize_slice():
+    data = np.zeros((4, 4, 4), dtype=np.float32)
+    data[:] = 500.0
+    data[0, :, :] = 0.0
+    data[3, :, :] = 1500.0
+    w = Show3DVolume(data, vmin=0, vmax=1000)
+    slc = w._normalize_slice(data[1, :, :])  # all 500
+    # 500 out of [0, 1000] → ~127
+    assert 120 <= slc[0, 0] <= 135
+    slc_clamp = w._normalize_slice(data[3, :, :])  # all 1500
+    assert slc_clamp[0, 0] == 255
+
+
+def test_show3dvolume_vmin_vmax_summary(capsys):
+    data = np.random.rand(8, 8, 8).astype(np.float32)
+    w = Show3DVolume(data, vmin=10.0, vmax=500.0)
+    w.summary()
+    out = capsys.readouterr().out
+    assert "vmin=10" in out
+    assert "vmax=500" in out
+
+
+def test_show3dvolume_vmin_vmax_save_image(tmp_path):
+    data = np.random.rand(8, 8, 8).astype(np.float32) * 1000
+    w = Show3DVolume(data, vmin=100, vmax=800)
+    p = w.save_image(tmp_path / "slice.png")
+    assert p.exists()
+
