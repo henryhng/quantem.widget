@@ -14,5 +14,7 @@ For contributing to the core `quantem` library, see
 
 getting-started
 building-widgets
+testing
+gpu-optimization
 reference
 ```

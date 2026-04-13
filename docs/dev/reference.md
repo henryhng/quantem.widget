@@ -130,33 +130,21 @@ applyColormap(floatData, rgbaBuffer, COLORMAPS["inferno"], vmin, vmax);
 
 ## Testing
 
-### Unit tests
+See the full [Testing guide](testing.md) for the three-layer testing strategy
+(unit tests, smoke tests, GPU E2E tests).
+
+Quick reference:
 
 ```bash
-python -m pytest tests/ -v --ignore=tests/test_e2e_smoke.py   # all
-python -m pytest tests/test_widget_show4dstem.py -v            # one widget
+# Unit tests (Python logic, ~20s)
+python -m pytest tests/ -v --ignore-glob='tests/test_e2e_*.py'
+
+# Smoke tests (UI layout, CPU fallback, ~4min)
+python -m pytest tests/test_e2e_smoke.py -v -k show2d
+
+# GPU E2E tests (real WebGPU, real rendering, ~2min)
+python scripts/gpu_test.py --build
 ```
-
-### End-to-end smoke tests
-
-Requires Playwright + JupyterLab. Renders widgets in a real browser, captures
-screenshots (light + dark theme), tests interactions. ~4 minutes:
-
-```bash
-python -m pytest tests/test_e2e_smoke.py -v                   # all
-python -m pytest tests/test_e2e_smoke.py -v -k show2d          # one widget
-```
-
-### Screenshot verification
-
-After modifying widget UI: `npm run build` → run smoke tests → visually verify
-`tests/screenshots/smoke/`.
-
-| File | Purpose |
-|------|---------|
-| `test_widget_*.py` | Unit tests (traits, shapes, data, state, ROI, display) |
-| `capture_*.py` | Screenshot capture scripts (run manually) |
-| `test_e2e_smoke.py` | Full E2E via Playwright |
 
 
 ## Publishing
