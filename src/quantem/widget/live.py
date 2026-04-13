@@ -214,6 +214,10 @@ class Live(anywidget.AnyWidget):
             for bf in [2, 4, 8]:
                 if frame_mb / (bf * bf) <= 32:
                     arr = bin2d(arr, factor=bf, mode="mean")
+                    # Adjust pixel_size for binning (only on first binned frame)
+                    if self.pixel_size > 0 and not getattr(self, '_pixel_size_adjusted', False):
+                        self.pixel_size = self.pixel_size * bf
+                        self._pixel_size_adjusted = True
                     break
 
         if label is None:
