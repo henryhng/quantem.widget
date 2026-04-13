@@ -1158,19 +1158,31 @@ const render = createRender(() => {
   }, []);
 
   // ─── Zoom (scroll wheel, cursor-centered) ───────────────────────
+  // Zoom: same center-based math as Show2D
   const handleWheel = React.useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
-      const rect = canvasContainerRef.current!.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const nz = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * factor));
-      setPanX((prev) => mx - (mx - prev) * (nz / zoom));
-      setPanY((prev) => my - (my - prev) * (nz / zoom));
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      // Mouse in canvas pixel coords
+      const mouseX = (e.clientX - rect.left) * (canvasW / rect.width);
+      const mouseY = (e.clientY - rect.top) * (canvasH / rect.height);
+      const cx = canvasW / 2;
+      const cy = canvasH / 2;
+      // Mouse in image space (inverse of center-based transform)
+      const imgX = (mouseX - cx - panXRef.current) / zoomRef.current + cx;
+      const imgY = (mouseY - cy - panYRef.current) / zoomRef.current + cy;
+      const factor = e.deltaY > 0 ? 0.9 : 1.1;
+      const nz = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoomRef.current * factor));
+      // New pan to keep mouse on same image point
+      const newPanX = mouseX - (imgX - cx) * nz - cx;
+      const newPanY = mouseY - (imgY - cy) * nz - cy;
       setZoom(nz);
+      setPanX(newPanX);
+      setPanY(newPanY);
     },
-    [zoom],
+    [canvasW, canvasH],
   );
 
   // ─── Screen → image coordinate helper ───────────────────────────
