@@ -60,16 +60,16 @@ def run_test(build=False, scale=False):
     has_gpu = cdp.eval("String(!!navigator.gpu)")
     check("webgpu", has_gpu == "true")
 
-    # Setup: execute cells via kernel API, then navigate
+    # Setup: ensure w exists, then run cells in browser
     print("\n  Setting up widget...")
     w_check = kernel.execute("type(w).__name__", timeout=5)
     if w_check["status"] != "ok":
-        # Execute cells
+        # Execute cells via kernel API first (reliable)
         cells = [
             "%load_ext autoreload\n%autoreload 2\n%env ANYWIDGET_HMR=1",
-            "from quantem.widget import IO, Show3D",
+            "from quantem.widget import IO, Show3D\nimport numpy as np",
             'result = IO.folder("/Users/macbook/data/bob/20260409_gold_drift_v3", file_type="emd", shape=(4096, 4096))',
-            "w = Show3D(result.data, pixel_size=result.pixel_size)\nw",
+            "w = Show3D(result.data, pixel_size=result.pixel_size)",
         ]
         for cell in cells:
             r = kernel.execute(cell, timeout=60)
@@ -78,12 +78,11 @@ def run_test(build=False, scale=False):
                 cdp.close()
                 return results
 
-    # Install interceptor (don't reload — may lose notebook)
     install_interceptor(cdp)
 
-    # Run cells in browser for widget rendering
-    run_cells_via_ui(cdp, n_cells=8, heavy_cells={2: 12, 3: 15})
-    time.sleep(12)
+    # Run cells in browser (Shift+Enter) for widget rendering
+    run_cells_via_ui(cdp, n_cells=8, heavy_cells={2: 12, 3: 20})
+    time.sleep(15)
 
     canvas_count = check_canvases(cdp)
     check("widget_rendered", canvas_count > 0, f"{canvas_count} canvases")

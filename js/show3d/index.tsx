@@ -1353,24 +1353,30 @@ function Show3D() {
 
     const lut = COLORMAPS[cmap] || COLORMAPS.inferno;
 
-    // GPU colormap path (single frame)
+    // GPU colormap path (single frame) — zero-copy via OffscreenCanvas→ImageBitmap
     const engine = gpuCmapRef.current;
     if (engine && gpuCmapReadyRef.current) {
-      // Upload current frame data + render via GPU
       engine.uploadData(0, logScale ? processed : frameData, width, height);
       engine.uploadLUT(cmap, lut);
       const capturedVmin = vmin, capturedVmax = vmax;
-      const capturedLogScale = logScale;
       requestAnimationFrame(async () => {
-        if (!mainOffscreenRef.current || !mainImgDataRef.current) return;
-        const rendered = await engine.renderSlots(
-          [0], [{ vmin: capturedVmin, vmax: capturedVmax }],
-          [mainOffscreenRef.current], [mainImgDataRef.current],
-          // Log scale already applied to data above if needed; GPU just does vmin/vmax clip
-          false,
-        );
-        if (rendered === 0) {
-          renderToOffscreenReuse(processed, lut, capturedVmin, capturedVmax, mainOffscreenRef.current!, mainImgDataRef.current!);
+        if (!mainOffscreenRef.current) return;
+        // Zero-copy: GPU → OffscreenCanvas → ImageBitmap → drawImage
+        const bitmaps = engine.renderSlotsToImageBitmap([0], [{ vmin: capturedVmin, vmax: capturedVmax }], false);
+        if (bitmaps && bitmaps[0]) {
+          const ctx = mainOffscreenRef.current.getContext("2d");
+          if (ctx) ctx.drawImage(bitmaps[0], 0, 0);
+        } else {
+          // Fallback: mapAsync path
+          if (mainImgDataRef.current) {
+            const rendered = await engine.renderSlots(
+              [0], [{ vmin: capturedVmin, vmax: capturedVmax }],
+              [mainOffscreenRef.current], [mainImgDataRef.current], false,
+            );
+            if (rendered === 0) {
+              renderToOffscreenReuse(processed, lut, capturedVmin, capturedVmax, mainOffscreenRef.current!, mainImgDataRef.current!);
+            }
+          }
         }
         // Redraw main canvas
         const canvas = canvasRef.current;
