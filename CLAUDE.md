@@ -112,7 +112,7 @@ All interactions must be profiled on real 4K EMD data. See `docs/dev/gpu-optimiz
 | Colormap change | <16ms | 7ms | Zero-copy GPU |
 | Log scale toggle | <16ms | 4ms | GPU shader |
 | Auto-contrast (cached) | <16ms | 4ms | GPU histogram cached |
-| Histogram slider drag | <16ms | ~17ms | GPU + React overhead |
+| Histogram slider drag | <16ms | 7ms | Direct rAF, bypass React |
 | Auto-contrast ON (first) | <500ms | 285ms | GPU histogram batch |
 | FFT toggle (12 imgs) | <10s | 5.7s | Progressive batch-4 |
 
@@ -126,7 +126,7 @@ All interactions must be profiled on real 4K EMD data. See `docs/dev/gpu-optimiz
 | 3-panel frame scrub | <16ms | 3ms | Auto-bin 4× |
 
 **Known slow paths (need optimization):**
-- Show3D `_compute_roi_plot`: scans ALL frames on ROI move (2s for 48×4K)
+- Show3D `_compute_roi_plot`: debounced 500ms (was every mousemove, 2s for 48×4K)
 - Show3D diff mode: recomputes ALL frames (1s for 48×4K)
 - FFT on 48 images: ~23s (batch-4 progressive)
 - GIF/ZIP export: Python CPU rendering
