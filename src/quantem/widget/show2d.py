@@ -6,6 +6,7 @@ Unlike Show3D (interactive), Show2D focuses on static visualization.
 """
 
 import json
+import os
 import pathlib
 import io
 import base64
@@ -30,6 +31,24 @@ from quantem.widget.tool_parity import (
     normalize_tool_groups,
 )
 
+
+
+def _reject_unknown_kwargs(cls, kwargs: dict) -> None:
+    """Raise TypeError if kwargs contains any key that isn't a declared trait.
+
+    anywidget/traitlets silently accept unknown keys, which let stale notebooks
+    pass obsolete params like ``pixel_size_angstrom=0.5`` with no warning.  This
+    helper catches typos and renamed-trait references at construction time.
+    """
+    traits = set(cls.class_trait_names())
+    unknown = [k for k in kwargs if k not in traits]
+    if unknown:
+        key = sorted(unknown)[0]
+        raise TypeError(
+            f"{cls.__name__}() got unexpected keyword argument {key!r}. "
+            f"Check for typos or a renamed parameter (e.g. canvas_size → size, "
+            f"image_width_px → size, pixel_size_angstrom → pixel_size)."
+        )
 
 
 def _round_to_nice(value: float) -> float:
@@ -93,6 +112,13 @@ class Show2D(anywidget.AnyWidget):
         Absolute maximum intensity for color mapping.
     ncols : int, default 3
         Number of columns in gallery mode.
+    size : int, default 0
+        Canvas rendering size in CSS pixels (the on-screen width of each image).
+        ``0`` uses the frontend default: 500 px for a single image, 300 px per
+        image in gallery mode.  Pass e.g. ``size=800`` to enlarge for a
+        presentation, or ``size=200`` to compress alongside a control panel.
+        This controls **display only** — the underlying image resolution is
+        never resampled; zooming into a 4K image preserves every pixel.
     disabled_tools : list of str, optional
         Tool groups to lock while still showing controls. Supported:
         ``"display"``, ``"histogram"``, ``"stats"``, ``"navigation"``,
@@ -108,6 +134,20 @@ class Show2D(anywidget.AnyWidget):
         ``disabled_tools``.
     hide_* : bool, optional
         Convenience flags mirroring ``disable_*`` for ``hidden_tools``.
+
+    Attributes
+    ----------
+    render_total_ms : int or None
+        End-to-end wall clock from constructor start to first browser paint,
+        populated by a JS→Python round-trip after the first canvas render.
+        ``None`` until the browser has actually painted; also printed to stdout
+        when it fires.  Use to triage "is it Python, wire, or the browser?"
+        during live acquisitions.
+    render_python_build_ms : int or None
+        Subset of ``render_total_ms`` covering Python ``__init__`` only.
+    render_wire_js_ms : int or None
+        Subset covering everything after Python returns: Comm transfer, JS
+        decode, colormap, and canvas paint.
 
     Examples
     --------
@@ -138,6 +178,9 @@ class Show2D(anywidget.AnyWidget):
     width = traitlets.Int(1).tag(sync=True)
     _display_bin_factor = traitlets.Int(1).tag(sync=True)  # 1 = full-res, 2/4/8 = binned
     _gpu_max_buffer_mb = traitlets.Int(0).tag(sync=True)  # GPU reports maxBufferSize (JS→Python)
+    # Flipped True by JS after the first colormap pass has painted to canvas.
+    # Used by the Python-side truthful timing print (end-to-end wall clock, not just __init__).
+    _js_rendered = traitlets.Bool(False).tag(sync=True)
     frame_bytes = traitlets.Bytes(b"").tag(sync=True)
     labels = traitlets.List(traitlets.Unicode()).tag(sync=True)
     title = traitlets.Unicode("").tag(sync=True)
@@ -157,7 +200,7 @@ class Show2D(anywidget.AnyWidget):
     # =========================================================================
     pixel_size = traitlets.Float(0.0).tag(sync=True)
     scale_bar_visible = traitlets.Bool(True).tag(sync=True)
-    canvas_size = traitlets.Int(0).tag(sync=True)
+    size = traitlets.Int(0).tag(sync=True)  # Canvas rendering size in CSS pixels; 0 = frontend default
 
     # =========================================================================
     # UI Visibility
@@ -308,14 +351,65 @@ class Show2D(anywidget.AnyWidget):
         hide_profile: bool = False,
         hide_all: bool = False,
         ncols: int = 3,
-        canvas_size: int = 0,
+        size: int = 0,
         display_bin: Union[int, str] = "auto",
         state=None,
         **kwargs,
     ):
         import time as _time
         _t0 = _time.perf_counter()
+        # Reject typos and stale kwargs (e.g. image_width_px, pixel_size_angstrom).
+        # anywidget/traitlets silently ignores unknown keys, which hid the
+        # pixel_size_angstrom bug in show2d_all_features.ipynb for months.
+        _reject_unknown_kwargs(type(self), kwargs)
         super().__init__(**kwargs)
+        # hold_sync() batches ALL traitlet assignments into a single comm message
+        # sent when the context manager exits.  Without this, each self.x = y
+        # fires a separate round-trip over the ZMQ/websocket channel, which
+        # can add 20+ seconds for a 30-image gallery in VS Code Jupyter.
+        with self.hold_sync():
+            self._init_sync(
+                data=data, labels=labels, title=title, cmap=cmap,
+                pixel_size=pixel_size, scale_bar_visible=scale_bar_visible,
+                show_fft=show_fft, fft_window=fft_window,
+                show_controls=show_controls, show_stats=show_stats,
+                log_scale=log_scale, auto_contrast=auto_contrast,
+                vmin=vmin, vmax=vmax,
+                disabled_tools=disabled_tools,
+                disable_display=disable_display,
+                disable_histogram=disable_histogram,
+                disable_stats=disable_stats,
+                disable_navigation=disable_navigation,
+                disable_view=disable_view,
+                disable_export=disable_export,
+                disable_roi=disable_roi,
+                disable_profile=disable_profile,
+                disable_all=disable_all,
+                hidden_tools=hidden_tools,
+                hide_display=hide_display,
+                hide_histogram=hide_histogram,
+                hide_stats=hide_stats,
+                hide_navigation=hide_navigation,
+                hide_view=hide_view,
+                hide_export=hide_export,
+                hide_roi=hide_roi,
+                hide_profile=hide_profile,
+                hide_all=hide_all,
+                ncols=ncols, size=size,
+                display_bin=display_bin, state=state, _t0=_t0)
+
+    def _init_sync(self, *, data, labels, title, cmap, pixel_size,
+                   scale_bar_visible, show_fft, fft_window,
+                   show_controls, show_stats, log_scale, auto_contrast,
+                   vmin, vmax, disabled_tools,
+                   disable_display, disable_histogram, disable_stats,
+                   disable_navigation, disable_view, disable_export,
+                   disable_roi, disable_profile, disable_all,
+                   hidden_tools, hide_display, hide_histogram, hide_stats,
+                   hide_navigation, hide_view, hide_export, hide_roi,
+                   hide_profile, hide_all,
+                   ncols, size, display_bin, state, _t0):
+        import time as _time
         self.widget_version = resolve_widget_version()
         self._display_data = None  # initialized after data setup
         self._display_bin = 1
@@ -388,7 +482,7 @@ class Show2D(anywidget.AnyWidget):
         self.cmap = cmap
         self.pixel_size = pixel_size
         self.scale_bar_visible = scale_bar_visible
-        self.canvas_size = canvas_size
+        self.size = size
         if show_fft and self.height * self.width > 2048 * 2048:
             warnings.warn(
                 f"FFT on {self.height}×{self.width} image ({self.height * self.width / 1e6:.1f}M pixels) "
@@ -483,11 +577,41 @@ class Show2D(anywidget.AnyWidget):
                 state = unwrap_state_payload(state)
             self.load_state_dict(state)
 
-        _elapsed = (_time.perf_counter() - _t0) * 1000
-        _shape = f"{self.n_images}×{self.height}×{self.width}" if self.n_images > 1 else f"{self.height}×{self.width}"
-        _mem = self._data.nbytes
-        _mem_str = f"{_mem / (1 << 20):.0f} MB" if _mem >= 1 << 20 else f"{_mem / (1 << 10):.0f} KB"
-        print(f"Show2D: {_shape} {_mem_str} in {_elapsed:.0f} ms")
+        # Stash wall-clock start on the instance; the observer below prints the
+        # TRUE end-to-end time after JS signals first paint.  The Python-only
+        # __init__ number is misleading for widget UX — a widget is not "done"
+        # until the browser has painted its first frame.
+        self._init_t0 = _t0
+        self._init_py_elapsed_ms = (_time.perf_counter() - _t0) * 1000
+        self.observe(self._on_first_render, names=["_js_rendered"])
+
+    def _on_first_render(self, change):
+        import time as _time
+        if not change.get("new"):
+            return
+        total_ms = (_time.perf_counter() - self._init_t0) * 1000
+        py_ms = self._init_py_elapsed_ms
+        shape = (f"{self.n_images}×{self.height}×{self.width}"
+                 if self.n_images > 1 else f"{self.height}×{self.width}")
+        mem = self._data.nbytes
+        mem_str = f"{mem / (1 << 20):.0f} MB" if mem >= 1 << 20 else f"{mem / (1 << 10):.0f} KB"
+        # Expose as attributes so tests and notebooks can assert on them.
+        # These are the ground truth for "did JS actually paint" — if they're
+        # None, the JS side never signaled first render.
+        self.render_total_ms = int(total_ms)
+        self.render_python_build_ms = int(py_ms)
+        self.render_wire_js_ms = int(total_ms - py_ms)
+        print(
+            f"Show2D: {shape} {mem_str} — "
+            f"rendered in {total_ms:.0f} ms (Python build {py_ms:.0f} ms, "
+            f"wire+JS {total_ms - py_ms:.0f} ms)",
+            flush=True,
+        )
+        # Detach observer: one-shot, we only care about the first paint.
+        try:
+            self.unobserve(self._on_first_render, names=["_js_rendered"])
+        except Exception:
+            pass
 
     def set_image(self, data, labels=None):
         """Replace the displayed image(s). Preserves all display settings."""
@@ -555,13 +679,18 @@ class Show2D(anywidget.AnyWidget):
         return f"Show2D({self.height}×{self.width}, cmap={self.cmap})"
 
     def _repr_mimebundle_(self, **kwargs):
-        """Return widget view + static PNG fallback.
+        """Return widget view + (optionally) static PNG fallback.
 
-        Live Jupyter renders the interactive widget. Static contexts
-        (nbsphinx, GitHub, nbviewer) fall back to the embedded PNG.
-        Images are downsampled to at most 256px per side for fast rendering.
+        Live Jupyter renders the interactive widget; the PNG fallback is only
+        consumed by nbsphinx / GitHub / nbviewer when the widget view cannot be
+        rendered.  Building the fallback runs matplotlib over every gallery image
+        (~1.7 s for a 30×512² stack) and that cost pays off only in static builds.
+        Gate it behind ``QUANTEM_WIDGET_STATIC_FALLBACK=1`` so interactive sessions
+        return immediately.
         """
         bundle = super()._repr_mimebundle_(**kwargs)
+        if not os.environ.get("QUANTEM_WIDGET_STATIC_FALLBACK"):
+            return bundle
         data_dict = bundle[0] if isinstance(bundle, tuple) else bundle
         n = self.n_images
         ncols = min(self.ncols, n)
@@ -764,7 +893,7 @@ class Show2D(anywidget.AnyWidget):
             "hidden_tools": self.hidden_tools,
             "pixel_size": self.pixel_size,
             "scale_bar_visible": self.scale_bar_visible,
-            "canvas_size": self.canvas_size,
+            "size": self.size,
             "ncols": self.ncols,
             "selected_idx": self.selected_idx,
             "roi_active": self.roi_active,
@@ -780,8 +909,11 @@ class Show2D(anywidget.AnyWidget):
 
     def load_state_dict(self, state):
         for key, val in state.items():
+            # Silent migrations for renamed keys in older saved state files.
             if key == "pixel_size_angstrom":
                 key = "pixel_size"
+            elif key == "canvas_size":
+                key = "size"
             if key == "display_bin":
                 self._display_bin = val
                 continue
@@ -830,6 +962,13 @@ class Show2D(anywidget.AnyWidget):
         if non_zero:
             parts = [f"#{i}={deg}°" for i, deg in non_zero]
             lines.append(f"Rotated:  {', '.join(parts)}")
+        rt = getattr(self, "render_total_ms", None)
+        if rt is not None:
+            pb = getattr(self, "render_python_build_ms", 0)
+            wj = getattr(self, "render_wire_js_ms", 0)
+            lines.append(f"Rendered: {rt} ms total (Python build {pb} ms, wire+JS {wj} ms)")
+        else:
+            lines.append("Rendered: (pending first browser paint)")
         print("\n".join(lines))
 
     def _compute_all_stats(self):
@@ -854,6 +993,12 @@ class Show2D(anywidget.AnyWidget):
             (self.image_rotations[i] if i < len(self.image_rotations) else 0) % 4 != 0
             for i in range(len(self._data_original))
         )
+        # No-rotation fast path: skip 30+ MB of redundant tobytes + stats recomputation
+        # on every widget init.  The observer fires once when image_rotations = [0]*n
+        # is assigned in __init__; without this guard that triggered a full frame
+        # rebuild + stats recompute for a no-op.
+        if not has_rotation and self._originals_are_views:
+            return
         if self._originals_are_views and has_rotation:
             self._data_original = [img.copy() for img in self._data_original]
             self._originals_are_views = False

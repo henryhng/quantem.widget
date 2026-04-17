@@ -709,6 +709,20 @@ function Show3D() {
   const [width] = useModelState<number>("width");
   const [height] = useModelState<number>("height");
   const [frameBytes] = useModelState<DataView>("frame_bytes");
+
+  // Truthful first-render signal: flipped ONCE after the first frame_bytes
+  // arrives and the browser has had time to composite two frames.  Python side
+  // observes `_js_rendered` and prints the real end-to-end wall clock, not the
+  // misleading Python-only __init__ number.
+  const [, setJsRendered] = useModelState<boolean>("_js_rendered");
+  const firstRenderFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (firstRenderFiredRef.current) return;
+    if (!frameBytes || frameBytes.byteLength === 0) return;
+    firstRenderFiredRef.current = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => setJsRendered(true)));
+  }, [frameBytes, setJsRendered]);
+
   const [labels] = useModelState<string[]>("labels");
   const [title] = useModelState<string>("title");
   const [dimLabel] = useModelState<string>("dim_label");
@@ -752,7 +766,7 @@ function Show3D() {
   const [scaleBarVisible] = useModelState<boolean>("scale_bar_visible");
 
   // Customization
-  const [canvasSizeTrait] = useModelState<number>("canvas_size");
+  const [canvasSizeTrait] = useModelState<number>("size");
 
   // Timestamps
   const [timestamps] = useModelState<number[]>("timestamps");

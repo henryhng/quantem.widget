@@ -389,7 +389,7 @@ function Show2D() {
   const [traitVmax] = useModelState<number | null>("vmax");
 
   // Customization
-  const [canvasSizeTrait] = useModelState<number>("canvas_size");
+  const [canvasSizeTrait] = useModelState<number>("size");
 
   // Scale bar
   const [pixelSize] = useModelState<number>("pixel_size");
@@ -677,6 +677,19 @@ function Show2D() {
   const colorbarVminRef = React.useRef(0);
   const colorbarVmaxRef = React.useRef(1);
   const [offscreenVersion, setOffscreenVersion] = React.useState(0);
+
+  // Truthful first-render signal: flipped ONCE after the first colormap pass has
+  // actually painted.  Python side observes `_js_rendered` and prints the real
+  // end-to-end wall clock.  Two rAFs ensure the browser has composited before we
+  // fire, so the printed time reflects "user can see the widget," not "data arrived."
+  const [, setJsRendered] = useModelState<boolean>("_js_rendered");
+  const firstRenderFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (firstRenderFiredRef.current) return;
+    if (offscreenVersion === 0) return;
+    firstRenderFiredRef.current = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => setJsRendered(true)));
+  }, [offscreenVersion, setJsRendered]);
 
   // Inline FFT refs for gallery mode
   const fftCanvasRefs = React.useRef<(HTMLCanvasElement | null)[]>([]);

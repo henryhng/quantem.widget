@@ -99,7 +99,7 @@ class ShowComplex2D(anywidget.AnyWidget):
     show_fft = traitlets.Bool(False).tag(sync=True)
     fft_window = traitlets.Bool(True).tag(sync=True)
     show_controls = traitlets.Bool(True).tag(sync=True)
-    image_width_px = traitlets.Int(0).tag(sync=True)
+    canvas_size = traitlets.Int(0).tag(sync=True)
     disabled_tools = traitlets.List(traitlets.Unicode()).tag(sync=True)
     hidden_tools = traitlets.List(traitlets.Unicode()).tag(sync=True)
 
@@ -202,7 +202,7 @@ class ShowComplex2D(anywidget.AnyWidget):
         show_stats: bool = True,
         show_controls: bool = True,
         scale_bar_visible: bool = True,
-        image_width_px: int = 0,
+        canvas_size: int = 0,
         disabled_tools: Optional[List[str]] = None,
         disable_display: bool = False,
         disable_histogram: bool = False,
@@ -293,7 +293,7 @@ class ShowComplex2D(anywidget.AnyWidget):
         self.show_stats = show_stats
         self.show_controls = show_controls
         self.scale_bar_visible = scale_bar_visible
-        self.image_width_px = image_width_px
+        self.canvas_size = canvas_size
         self.disabled_tools = self._build_disabled_tools(
             disabled_tools=disabled_tools,
             disable_display=disable_display,
@@ -565,7 +565,7 @@ class ShowComplex2D(anywidget.AnyWidget):
             "fft_window": self.fft_window,
             "show_stats": self.show_stats,
             "show_controls": self.show_controls,
-            "image_width_px": self.image_width_px,
+            "canvas_size": self.canvas_size,
             "roi_mode": self.roi_mode,
             "roi_center_row": self.roi_center_row,
             "roi_center_col": self.roi_center_col,

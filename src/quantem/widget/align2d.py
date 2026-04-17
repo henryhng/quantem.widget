@@ -150,8 +150,9 @@ class Align2D(anywidget.AnyWidget):
         Fractional padding on each side. Adjustable from the frontend.
     pixel_size : float, default 0.0
         Pixel size in Å for scale bar (0 = uncalibrated).
-    canvas_size : int, default 300
-        Initial canvas size in CSS pixels for each column.
+    canvas_size : int, default 0
+        Initial canvas size in CSS pixels for each column. 0 uses the
+        frontend default (300 px), matching Show2D/Show3D conventions.
     auto_align : bool, default True
         Automatically compute initial alignment via cross-correlation.
     max_shift : float, default 0.0
@@ -219,7 +220,7 @@ class Align2D(anywidget.AnyWidget):
     max_shift = traitlets.Float(0.0).tag(sync=True)
 
     # UI
-    canvas_size = traitlets.Int(300).tag(sync=True)
+    canvas_size = traitlets.Int(0).tag(sync=True)  # 0 = use frontend default (300 px)
     hist_source = traitlets.Unicode("a").tag(sync=True)
 
     # Tool visibility / locking
@@ -305,7 +306,7 @@ class Align2D(anywidget.AnyWidget):
         opacity: float = 0.5,
         padding: float = 0.2,
         pixel_size: float = 0.0,
-        canvas_size: int = 300,
+        canvas_size: int = 0,
         auto_align: bool = True,
         max_shift: float = 0.0,
         rotation: float = 0.0,

@@ -218,11 +218,11 @@ def test_show3d_single_slice():
     assert widget.n_slices == 1
     assert widget.slice_idx == 0
 
-def test_show3d_image_width():
-    """canvas_size parameter is stored."""
+def test_show3d_size():
+    """size parameter is stored."""
     data = np.random.rand(5, 16, 16).astype(np.float32)
-    widget = Show3D(data, canvas_size=400)
-    assert widget.canvas_size == 400
+    widget = Show3D(data, size=400)
+    assert widget.size == 400
 
 def test_show3d_current_timestamp():
     """Current timestamp updates with slice_idx."""

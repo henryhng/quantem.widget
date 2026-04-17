@@ -17,6 +17,20 @@
 - **deferred `_data_original` copy** — originals stored as views into `_data` (not independent copies) until a rotation is applied; saves 800MB for a 12 × 4K gallery
 - **vectorized stats** — `np.mean(data, axis=(1,2))` instead of per-image loop
 
+### Show2D, Show3D (perf + truthful timing)
+- **`_repr_mimebundle_` matplotlib hog removed** — the Show2D static PNG fallback for nbsphinx/GitHub was running `matplotlib.pyplot.subplots` + `savefig` on every live-Jupyter display (~1.7s for a 30-image gallery, silently dropped because the widget-view MIME wins). Now gated behind `QUANTEM_WIDGET_STATIC_FALLBACK=1`; live Jupyter returns the bundle in ~0ms.
+- **`_apply_rotations` no-op fast-path** — initial `image_rotations = [0]*n` assignment no longer triggers a redundant stats + 31 MB `tobytes` rebuild; saves ~25 ms per init.
+- **truthful first-render print** — replaces the misleading `Show2D/3D: … in X ms` constructor print (Python-only, ignored `_repr_mimebundle_` + wire + JS). New print fires ONCE after JS signals first canvas paint: `Show2D: 30×512×512 30 MB — rendered in 420 ms (Python build 56 ms, wire+JS 364 ms)`. Requires new `_js_rendered` trait flipped by JS after two rAFs.
+
+### ShowComplex2D
+- **breaking:** `image_width_px` renamed to `canvas_size` — matches Show2D/Show3D/Mark2D convention. Pass `canvas_size=800` (0 = auto, 500 px default).
+
+### Align2D
+- `canvas_size` default changed from 300 to 0 — matches the "0 = use frontend default" convention used everywhere else. Frontend still renders at 300 px when unspecified. No visual change; just API consistency.
+
+### Developer / notebooks
+- **`enable_hmr()`** helper in `quantem.widget` — spawns `npm run dev` as a background subprocess (survives kernel restart via pidfile), sets `ANYWIDGET_HMR=1`. Drop `enable_hmr()` in any notebook's first cell to get widget hot-reload without opening a second terminal. `disable_hmr()` to stop.
+
 ## v0.0.15 (2026-03-22)
 
 ### New widgets

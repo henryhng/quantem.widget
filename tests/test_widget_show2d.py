@@ -105,11 +105,11 @@ def test_show2d_ncols():
     widget = Show2D(data, ncols=2)
     assert widget.ncols == 2
 
-def test_show2d_canvas_size():
-    """canvas_size parameter is stored."""
+def test_show2d_size():
+    """size parameter is stored."""
     data = np.random.rand(16, 16).astype(np.float32)
-    widget = Show2D(data, canvas_size=500)
-    assert widget.canvas_size == 500
+    widget = Show2D(data, size=500)
+    assert widget.size == 500
 
 def test_show2d_show_controls():
     """show_controls can be toggled."""

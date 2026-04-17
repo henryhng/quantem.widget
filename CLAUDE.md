@@ -101,6 +101,29 @@ Use the kernel matching your development conda env for notebooks.
 - **JS computation validation:** When implementing mathematical operations in JavaScript (FFT, windowing, statistics, coordinate transforms), always port the exact JS code to Python and validate against NumPy/SciPy/PyTorch ground truth in unit tests. Do not hardcode formulas separately — port the JS line-by-line so the test catches any JS-side bugs. See `test_widget_show2d.py` `_js_hann_1d` / `_js_apply_hann_window_2d` for the pattern.
 - **IO testing must use real data.** When testing IO features (progress bars, benchmark, loading), write notebooks that load real files already on disk — never generate synthetic data with for-loops and tempfiles. Use paths from existing IO notebooks (`notebooks/io/io_file.ipynb`, `io_folder.ipynb`) as reference for where data lives. Supported formats: EMD (Velox), DM3/DM4, TIFF, Arina 4D-STEM (see `notebooks/io/io_arina_file.ipynb` and `io_arina_folder.ipynb`). Unit tests (`tests/test_io.py`) may use synthetic data for CI portability, but notebooks must always use real files.
 
+## Widget Construction Perf — Do Not Do Heavy Work in `_repr_mimebundle_`
+
+`_repr_mimebundle_` is called by Jupyter AFTER `__init__` returns to get the widget's display payload. It runs on the same kernel tick as the cell, and anything it does **blocks the comm flush** — the browser cannot start receiving the widget until this method returns. A past session had `Show2D._repr_mimebundle_` running `matplotlib.pyplot.subplots` + `imshow` + `savefig` over all gallery images (to build a static PNG fallback for nbsphinx), which cost ~1.7 s on every display of a 30-image gallery and made a `Show2D(phases)` cell feel like it took 20 seconds. The PNG was silently dropped in live Jupyter because the widget-view MIME type takes priority.
+
+**Rules for any widget's `_repr_mimebundle_`:**
+- Never call matplotlib, PIL, or any synchronous image rendering unless the caller explicitly opts in (env var or kwarg).
+- The static PNG fallback is for nbsphinx / GitHub / nbviewer only. Gate it behind `QUANTEM_WIDGET_STATIC_FALLBACK=1`.
+- Treat the method as a hot path: microbenchmark with `time.perf_counter()` around it on every new widget, same way you benchmark `__init__`.
+
+**Rule for observers on init-assigned traits:** If `__init__` assigns a trait like `self.image_rotations = [0] * n` that has an `@observe` hook, the hook fires and runs its work a SECOND time after `__init__` body completes. Always add an early-return fast-path to such observers for the no-op case (e.g. all-zeros). Otherwise every widget construction pays 2× the stats+tobytes work for nothing.
+
+**Diagnosis checklist when any widget "feels slow":**
+```python
+import time, anywidget
+from quantem.widget import Show2D  # or whichever widget
+
+_init = anywidget.AnyWidget.__init__
+_repr = Show2D._repr_mimebundle_
+anywidget.AnyWidget.__init__ = lambda self, **kw: (lambda t: (_init(self, **kw), print(f"__init__: {1000*(time.perf_counter()-t):.1f}ms"))[0])(time.perf_counter())
+Show2D._repr_mimebundle_ = lambda self, **kw: (lambda t: (_repr(self, **kw), print(f"_repr_mimebundle_: {1000*(time.perf_counter()-t):.1f}ms"))[0])(time.perf_counter())
+```
+Anything over 100 ms in `_repr_mimebundle_` is a bug. The fix lives there, not in comm/transport.
+
 ## Performance Targets
 
 All interactions must be profiled on real 4K EMD data. See `docs/dev/gpu-optimization.md` for the full interaction audit and methodology.

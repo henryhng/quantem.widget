@@ -29,12 +29,13 @@ export function applyLogScaleInPlace(data: Float32Array, out: Float32Array): Flo
   return out;
 }
 
-/** Percentile-based clipping using O(n) histogram approach. */
+/** Percentile-based clipping using O(n) histogram approach.
+ *  Also returns data min/max so callers can skip a redundant findDataRange scan. */
 export function percentileClip(
   data: Float32Array, pLow: number, pHigh: number,
-): { vmin: number; vmax: number } {
+): { vmin: number; vmax: number; min: number; max: number } {
   const len = data.length;
-  if (len === 0) return { vmin: 0, vmax: 0 };
+  if (len === 0) return { vmin: 0, vmax: 0, min: 0, max: 0 };
 
   // Pass 1: find min/max
   let min = Infinity, max = -Infinity;
@@ -43,7 +44,7 @@ export function percentileClip(
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  if (min === max) return { vmin: min, vmax: max };
+  if (min === max) return { vmin: min, vmax: max, min, max };
 
   // Pass 2: build histogram
   const NUM_BINS = 1024;
@@ -68,7 +69,7 @@ export function percentileClip(
     cumSum += bins[i];
     if (cumSum >= highCount) { vmax = min + (i / (NUM_BINS - 1)) * range; break; }
   }
-  return { vmin, vmax };
+  return { vmin, vmax, min, max };
 }
 
 /** Compute mean, min, max, and standard deviation of a Float32Array. */

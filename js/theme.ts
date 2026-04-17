@@ -3,7 +3,7 @@
  * Detects JupyterLab, VS Code, Colab, Classic Jupyter, and OS preferences.
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 // ============================================================================
 // Types
@@ -142,5 +142,8 @@ export function useTheme(): { themeInfo: ThemeInfo; colors: ThemeColors } {
     };
   }, []);
 
-  return { themeInfo, colors: getThemeColors(themeInfo.theme) };
+  // Memoize by theme string so `colors` is referentially stable across renders —
+  // effects/components that depend on `colors` only re-run when the theme flips.
+  const colors = useMemo(() => getThemeColors(themeInfo.theme), [themeInfo.theme]);
+  return { themeInfo, colors };
 }

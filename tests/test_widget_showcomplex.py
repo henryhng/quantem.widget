@@ -321,7 +321,7 @@ def test_showcomplex_default_options():
     assert widget.show_controls is True
     assert widget.show_fft is False
     assert widget.scale_bar_visible is True
-    assert widget.image_width_px == 0
+    assert widget.canvas_size == 0
     assert widget.percentile_low == pytest.approx(1.0)
     assert widget.percentile_high == pytest.approx(99.0)
 
@@ -351,11 +351,11 @@ def test_showcomplex_scale_bar():
     w = ShowComplex2D(data, scale_bar_visible=False)
     assert w.scale_bar_visible is False
 
-def test_showcomplex_image_width_px():
-    """image_width_px option."""
+def test_showcomplex_canvas_size():
+    """canvas_size option."""
     data = (np.random.rand(8, 8) + 1j * np.random.rand(8, 8)).astype(np.complex64)
-    w = ShowComplex2D(data, image_width_px=800)
-    assert w.image_width_px == 800
+    w = ShowComplex2D(data, canvas_size=800)
+    assert w.canvas_size == 800
 
 def test_showcomplex_percentiles():
     """Custom percentile settings."""
@@ -517,7 +517,7 @@ def test_showcomplex_state_dict_completeness():
         "display_mode", "title", "cmap", "log_scale", "auto_contrast",
         "percentile_low", "percentile_high", "pixel_size",
         "scale_bar_visible", "show_fft", "fft_window", "show_stats", "show_controls",
-        "image_width_px", "disabled_tools", "hidden_tools",
+        "canvas_size", "disabled_tools", "hidden_tools",
         "roi_mode", "roi_center_row", "roi_center_col",
         "roi_radius", "roi_width", "roi_height",
     }
@@ -540,7 +540,7 @@ def test_showcomplex_state_dict_all_options():
         show_fft=True,
         show_stats=False,
         show_controls=False,
-        image_width_px=600,
+        canvas_size=600,
     )
     state = w1.state_dict()
     w2 = ShowComplex2D(data, state=state)
@@ -556,7 +556,7 @@ def test_showcomplex_state_dict_all_options():
     assert w2.show_fft is True
     assert w2.show_stats is False
     assert w2.show_controls is False
-    assert w2.image_width_px == 600
+    assert w2.canvas_size == 600
 
 def test_showcomplex_save_load_file(tmp_path):
     """State can be saved to and loaded from a JSON file."""

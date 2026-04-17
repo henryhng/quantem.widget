@@ -395,7 +395,7 @@ function ShowComplex2D() {
   const [showFft, setShowFft] = useModelState<boolean>("show_fft");
   const [fftWindow, setFftWindow] = useModelState<boolean>("fft_window");
   const [showControls] = useModelState<boolean>("show_controls");
-  const [imageWidthPx] = useModelState<number>("image_width_px");
+  const [canvasSize] = useModelState<number>("canvas_size");
 
   // Stats
   const [statsMean] = useModelState<number>("stats_mean");
@@ -585,11 +585,11 @@ function ShowComplex2D() {
   // ============================================================================
   React.useEffect(() => {
     if (!width || !height) return;
-    const targetW = imageWidthPx > 0 ? imageWidthPx : DEFAULT_CANVAS_SIZE;
+    const targetW = canvasSize > 0 ? canvasSize : DEFAULT_CANVAS_SIZE;
     const scale = targetW / width;
     setCanvasW(Math.round(width * scale));
     setCanvasH(Math.round(height * scale));
-  }, [width, height, imageWidthPx]);
+  }, [width, height, canvasSize]);
 
   // ============================================================================
   // Build colormapped offscreen canvas (expensive: HSV render, colormap LUT, percentile clip)

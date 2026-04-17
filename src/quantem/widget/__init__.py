@@ -54,6 +54,8 @@ _EXPORTS = {
     "MetricExplorer": ("quantem.widget.show_metric_explorer", "MetricExplorer"),
     "ShowComplex2D": ("quantem.widget.showcomplex", "ShowComplex2D"),
     "profile": ("quantem.widget.profile", "profile"),
+    "enable_hmr": ("quantem.widget._hmr", "enable_hmr"),
+    "disable_hmr": ("quantem.widget._hmr", "disable_hmr"),
 }
 
 
@@ -92,4 +94,6 @@ __all__ = [
     "Show4DSTEM",
     "MetricExplorer",
     "ShowComplex2D",
+    "enable_hmr",
+    "disable_hmr",
 ]
