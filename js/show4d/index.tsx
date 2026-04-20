@@ -686,6 +686,10 @@ function Show4D() {
   const [fftWindow, setFftWindow] = useModelState<boolean>("fft_window");
   const [disabledTools, setDisabledTools] = useModelState<string[]>("disabled_tools");
   const [hiddenTools, setHiddenTools] = useModelState<string[]>("hidden_tools");
+  const [traitNavVmin] = useModelState<number | null>("nav_vmin");
+  const [traitNavVmax] = useModelState<number | null>("nav_vmax");
+  const [traitSigVmin] = useModelState<number | null>("sig_vmin");
+  const [traitSigVmax] = useModelState<number | null>("sig_vmax");
 
   const toolVisibility = React.useMemo(
     () => computeToolVisibility("Show4D", disabledTools, hiddenTools),
@@ -998,7 +1002,22 @@ function Show4D() {
     }
 
     const { min: dataMin, max: dataMax } = findDataRange(scaled);
-    const { vmin, vmax } = sliderRange(dataMin, dataMax, navVminPct, navVmaxPct);
+    const hasNavAbsRange = traitNavVmin != null && traitNavVmax != null;
+    let vmin: number, vmax: number;
+    if (hasNavAbsRange) {
+      if (navScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitNavVmin!, 0));
+        vmax = Math.log1p(Math.max(traitNavVmax!, 0));
+      } else if (navScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitNavVmin!, 0), navPowerExp);
+        vmax = Math.pow(Math.max(traitNavVmax!, 0), navPowerExp);
+      } else {
+        vmin = traitNavVmin!;
+        vmax = traitNavVmax!;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(dataMin, dataMax, navVminPct, navVmaxPct));
+    }
 
     const width = navCols;
     const height = navRows;
@@ -1025,7 +1044,7 @@ function Show4D() {
     applyColormap(scaled, imgData.data, lut, vmin, vmax);
     offCtx.putImageData(imgData, 0, 0);
     setNavOffscreenVersion(v => v + 1);
-  }, [navImageBytes, navColormap, navVminPct, navVmaxPct, navScaleMode, navPowerExp, navRows, navCols]);
+  }, [navImageBytes, navColormap, navVminPct, navVmaxPct, navScaleMode, navPowerExp, navRows, navCols, traitNavVmin, traitNavVmax]);
 
   // ── Nav zoom/pan redraw (lightweight — just drawImage with transform) ──
   // useLayoutEffect prevents black flash when canvas dimensions change (resize)
@@ -1060,7 +1079,22 @@ function Show4D() {
     }
 
     const { min: dataMin, max: dataMax } = findDataRange(scaled);
-    const { vmin, vmax } = sliderRange(dataMin, dataMax, sigVminPct, sigVmaxPct);
+    const hasSigAbsRange = traitSigVmin != null && traitSigVmax != null;
+    let vmin: number, vmax: number;
+    if (hasSigAbsRange) {
+      if (sigScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitSigVmin!, 0));
+        vmax = Math.log1p(Math.max(traitSigVmax!, 0));
+      } else if (sigScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitSigVmin!, 0), sigPowerExp);
+        vmax = Math.pow(Math.max(traitSigVmax!, 0), sigPowerExp);
+      } else {
+        vmin = traitSigVmin!;
+        vmax = traitSigVmax!;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(dataMin, dataMax, sigVminPct, sigVmaxPct));
+    }
 
     const width = sigCols;
     const height = sigRows;
@@ -1087,7 +1121,7 @@ function Show4D() {
     applyColormap(scaled, imgData.data, lut, vmin, vmax);
     offCtx.putImageData(imgData, 0, 0);
     setSigOffscreenVersion(v => v + 1);
-  }, [frameBytes, sigColormap, sigVminPct, sigVmaxPct, sigScaleMode, sigPowerExp, sigRows, sigCols]);
+  }, [frameBytes, sigColormap, sigVminPct, sigVmaxPct, sigScaleMode, sigPowerExp, sigRows, sigCols, traitSigVmin, traitSigVmax]);
 
   // ── Signal zoom/pan redraw (lightweight — just drawImage with transform) ──
   React.useLayoutEffect(() => {
@@ -2008,15 +2042,23 @@ function Show4D() {
     const navData = new Float32Array(navImageBytes.buffer, navImageBytes.byteOffset, navImageBytes.byteLength / 4);
     const lut = COLORMAPS[navColormap] || COLORMAPS.inferno;
     const { min: dMin, max: dMax } = findDataRange(navData);
-    const offscreen = renderToOffscreen(navData, navCols, navRows, lut, dMin, dMax);
+    let eVmin: number, eVmax: number;
+    if (traitNavVmin != null && traitNavVmax != null) {
+      eVmin = traitNavVmin;
+      eVmax = traitNavVmax;
+    } else {
+      eVmin = dMin;
+      eVmax = dMax;
+    }
+    const offscreen = renderToOffscreen(navData, navCols, navRows, lut, eVmin, eVmax);
     if (!offscreen) return;
     const pixelSizeAngstrom = navPixelSize > 0 && navPixelUnit === "\u00C5" ? navPixelSize : navPixelSize > 0 && navPixelUnit === "nm" ? navPixelSize * 10 : 0;
     const figCanvas = exportFigure({
       imageCanvas: offscreen,
       title: title || "Navigation",
       lut,
-      vmin: dMin,
-      vmax: dMax,
+      vmin: eVmin,
+      vmax: eVmax,
       pixelSize: pixelSizeAngstrom > 0 ? pixelSizeAngstrom : undefined,
       showColorbar: withColorbar,
       showScaleBar: pixelSizeAngstrom > 0,
@@ -2049,7 +2091,21 @@ function Show4D() {
     }
     const lut = COLORMAPS[sigColormap] || COLORMAPS.inferno;
     const { min: pMin, max: pMax } = findDataRange(processed);
-    const { vmin, vmax } = sliderRange(pMin, pMax, sigVminPct, sigVmaxPct);
+    let vmin: number, vmax: number;
+    if (traitSigVmin != null && traitSigVmax != null) {
+      if (sigScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitSigVmin, 0));
+        vmax = Math.log1p(Math.max(traitSigVmax, 0));
+      } else if (sigScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitSigVmin, 0), sigPowerExp);
+        vmax = Math.pow(Math.max(traitSigVmax, 0), sigPowerExp);
+      } else {
+        vmin = traitSigVmin;
+        vmax = traitSigVmax;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(pMin, pMax, sigVminPct, sigVmaxPct));
+    }
     const offscreen = renderToOffscreen(processed, sigCols, sigRows, lut, vmin, vmax);
     if (!offscreen) return;
     const pixelSizeAngstrom = sigPixelSize > 0 && sigPixelUnit === "\u00C5" ? sigPixelSize : sigPixelSize > 0 && sigPixelUnit === "nm" ? sigPixelSize * 10 : 0;
