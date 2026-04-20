@@ -248,6 +248,12 @@ class Show4DSTEM(anywidget.AnyWidget):
     fft_vmin_pct = traitlets.Float(0.0).tag(sync=True)
     fft_vmax_pct = traitlets.Float(100.0).tag(sync=True)
 
+    # Absolute intensity bounds (override percentile sliders when both set)
+    dp_vmin = traitlets.Float(None, allow_none=True).tag(sync=True)
+    dp_vmax = traitlets.Float(None, allow_none=True).tag(sync=True)
+    vi_vmin = traitlets.Float(None, allow_none=True).tag(sync=True)
+    vi_vmax = traitlets.Float(None, allow_none=True).tag(sync=True)
+
     fft_auto = traitlets.Bool(True).tag(sync=True)
     show_fft = traitlets.Bool(False).tag(sync=True)
     fft_window = traitlets.Bool(True).tag(sync=True)
@@ -418,6 +424,10 @@ class Show4DSTEM(anywidget.AnyWidget):
         show_fft: bool = False,
         fft_window: bool = True,
         show_controls: bool = True,
+        dp_vmin: float | None = None,
+        dp_vmax: float | None = None,
+        vi_vmin: float | None = None,
+        vi_vmax: float | None = None,
         verbose: bool = True,
         state=None,
         **kwargs,
@@ -493,6 +503,10 @@ class Show4DSTEM(anywidget.AnyWidget):
         self.show_fft = show_fft
         self.fft_window = fft_window
         self.show_controls = show_controls
+        self.dp_vmin = dp_vmin
+        self.dp_vmax = dp_vmax
+        self.vi_vmin = vi_vmin
+        self.vi_vmax = vi_vmax
         # Path animation (configured via set_path() or raster())
         self._path_points: list[tuple[int, int]] = []
         # Named user presets saved during this session
@@ -798,6 +812,10 @@ class Show4DSTEM(anywidget.AnyWidget):
             "vi_vmax_pct": self.vi_vmax_pct,
             "fft_vmin_pct": self.fft_vmin_pct,
             "fft_vmax_pct": self.fft_vmax_pct,
+            "dp_vmin": self.dp_vmin,
+            "dp_vmax": self.dp_vmax,
+            "vi_vmin": self.vi_vmin,
+            "vi_vmax": self.vi_vmax,
             "fft_auto": self.fft_auto,
             "show_fft": self.show_fft,
             "fft_window": self.fft_window,
@@ -908,11 +926,17 @@ class Show4DSTEM(anywidget.AnyWidget):
             lines.append(f"ROI:      {self.roi_mode} at ({self.roi_center_row:.1f}, {self.roi_center_col:.1f}) r={self.roi_radius:.1f}")
         if self.vi_roi_mode != "off":
             lines.append(f"VI ROI:   {self.vi_roi_mode} at ({self.vi_roi_center_row:.1f}, {self.vi_roi_center_col:.1f}) r={self.vi_roi_radius:.1f}")
+        dp_contrast = f"{self.dp_vmin_pct:.1f}-{self.dp_vmax_pct:.1f}%"
+        if self.dp_vmin is not None and self.dp_vmax is not None:
+            dp_contrast += f", dp_vmin={self.dp_vmin:.4g}, dp_vmax={self.dp_vmax:.4g}"
         lines.append(
-            f"DP view:  {self.dp_colormap}, {self.dp_scale_mode}, {self.dp_vmin_pct:.1f}-{self.dp_vmax_pct:.1f}%"
+            f"DP view:  {self.dp_colormap}, {self.dp_scale_mode}, {dp_contrast}"
         )
+        vi_contrast = f"{self.vi_vmin_pct:.1f}-{self.vi_vmax_pct:.1f}%"
+        if self.vi_vmin is not None and self.vi_vmax is not None:
+            vi_contrast += f", vi_vmin={self.vi_vmin:.4g}, vi_vmax={self.vi_vmax:.4g}"
         lines.append(
-            f"VI view:  {self.vi_colormap}, {self.vi_scale_mode}, {self.vi_vmin_pct:.1f}-{self.vi_vmax_pct:.1f}%"
+            f"VI view:  {self.vi_colormap}, {self.vi_scale_mode}, {vi_contrast}"
         )
         if self.show_fft:
             fft_parts = [f"{self.fft_colormap}, {self.fft_scale_mode}, {self.fft_vmin_pct:.1f}-{self.fft_vmax_pct:.1f}%, auto={self.fft_auto}"]
@@ -1486,7 +1510,15 @@ class Show4DSTEM(anywidget.AnyWidget):
         scaled = self._apply_scale_mode(raw, scale_mode, self.dp_power_exp)
         data_min = float(scaled.min()) if scaled.size else 0.0
         data_max = float(scaled.max()) if scaled.size else 0.0
-        vmin, vmax = self._slider_range(data_min, data_max, self.dp_vmin_pct, self.dp_vmax_pct)
+        if self.dp_vmin is not None and self.dp_vmax is not None:
+            vmin = float(self._apply_scale_mode(
+                np.array([max(self.dp_vmin, 0)], dtype=np.float32), scale_mode, self.dp_power_exp
+            )[0])
+            vmax = float(self._apply_scale_mode(
+                np.array([max(self.dp_vmax, 0)], dtype=np.float32), scale_mode, self.dp_power_exp
+            )[0])
+        else:
+            vmin, vmax = self._slider_range(data_min, data_max, self.dp_vmin_pct, self.dp_vmax_pct)
         rgb = self._render_colormap_rgb(scaled, self.dp_colormap, vmin, vmax)
         metadata = {
             "source": source,
@@ -1504,7 +1536,15 @@ class Show4DSTEM(anywidget.AnyWidget):
         scaled = self._apply_scale_mode(raw, self.vi_scale_mode, self.vi_power_exp)
         data_min = float(scaled.min()) if scaled.size else 0.0
         data_max = float(scaled.max()) if scaled.size else 0.0
-        vmin, vmax = self._slider_range(data_min, data_max, self.vi_vmin_pct, self.vi_vmax_pct)
+        if self.vi_vmin is not None and self.vi_vmax is not None:
+            vmin = float(self._apply_scale_mode(
+                np.array([max(self.vi_vmin, 0)], dtype=np.float32), self.vi_scale_mode, self.vi_power_exp
+            )[0])
+            vmax = float(self._apply_scale_mode(
+                np.array([max(self.vi_vmax, 0)], dtype=np.float32), self.vi_scale_mode, self.vi_power_exp
+            )[0])
+        else:
+            vmin, vmax = self._slider_range(data_min, data_max, self.vi_vmin_pct, self.vi_vmax_pct)
         rgb = self._render_colormap_rgb(scaled, self.vi_colormap, vmin, vmax)
         metadata = {
             "colormap": self.vi_colormap,
@@ -3898,9 +3938,17 @@ class Show4DSTEM(anywidget.AnyWidget):
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
         mode = self.dp_scale_mode
         scaled = self._apply_scale_mode(frame, mode, self.dp_power_exp)
-        fmin = float(scaled.min())
-        fmax = float(scaled.max())
-        fmin, fmax = self._slider_range(fmin, fmax, self.dp_vmin_pct, self.dp_vmax_pct)
+        if self.dp_vmin is not None and self.dp_vmax is not None:
+            fmin = float(self._apply_scale_mode(
+                np.array([max(self.dp_vmin, 0)], dtype=np.float32), mode, self.dp_power_exp
+            )[0])
+            fmax = float(self._apply_scale_mode(
+                np.array([max(self.dp_vmax, 0)], dtype=np.float32), mode, self.dp_power_exp
+            )[0])
+        else:
+            fmin = float(scaled.min())
+            fmax = float(scaled.max())
+            fmin, fmax = self._slider_range(fmin, fmax, self.dp_vmin_pct, self.dp_vmax_pct)
         if fmax > fmin:
             return np.clip((scaled - fmin) / (fmax - fmin) * 255, 0, 255).astype(np.uint8)
         return np.zeros(frame.shape, dtype=np.uint8)

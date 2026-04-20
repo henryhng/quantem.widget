@@ -1113,3 +1113,71 @@ def test_show4dstem_virtual_image_for_frame():
     assert vi.shape == (4, 4)
     assert vi.dtype == np.float32
     assert w.frame_idx == original_frame_idx
+
+
+# ── dp_vmin/dp_vmax + vi_vmin/vi_vmax tests ─────────────────────────────────
+
+
+def test_show4dstem_vmin_vmax_default_none():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4DSTEM(data)
+    assert w.dp_vmin is None
+    assert w.dp_vmax is None
+    assert w.vi_vmin is None
+    assert w.vi_vmax is None
+
+
+def test_show4dstem_vmin_vmax_constructor():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32) * 5000
+    w = Show4DSTEM(data, dp_vmin=0, dp_vmax=3000, vi_vmin=10, vi_vmax=500)
+    assert w.dp_vmin == pytest.approx(0)
+    assert w.dp_vmax == pytest.approx(3000)
+    assert w.vi_vmin == pytest.approx(10)
+    assert w.vi_vmax == pytest.approx(500)
+
+
+def test_show4dstem_vmin_vmax_state_dict_roundtrip():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32) * 5000
+    w = Show4DSTEM(data, dp_vmin=0, dp_vmax=3000, vi_vmin=10, vi_vmax=500)
+    sd = w.state_dict()
+    assert sd["dp_vmin"] == pytest.approx(0)
+    assert sd["dp_vmax"] == pytest.approx(3000)
+    assert sd["vi_vmin"] == pytest.approx(10)
+    assert sd["vi_vmax"] == pytest.approx(500)
+    w2 = Show4DSTEM(data, state=sd)
+    assert w2.dp_vmin == pytest.approx(0)
+    assert w2.dp_vmax == pytest.approx(3000)
+    assert w2.vi_vmin == pytest.approx(10)
+    assert w2.vi_vmax == pytest.approx(500)
+
+
+def test_show4dstem_vmin_vmax_none_in_state_dict():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4DSTEM(data)
+    sd = w.state_dict()
+    assert sd["dp_vmin"] is None
+    assert sd["dp_vmax"] is None
+    assert sd["vi_vmin"] is None
+    assert sd["vi_vmax"] is None
+
+
+def test_show4dstem_vmin_vmax_normalize_frame():
+    data = np.zeros((2, 2, 2, 2), dtype=np.float32)
+    frame = np.array([[0, 500], [1000, 1500]], dtype=np.float32)
+    w = Show4DSTEM(data, dp_vmin=0, dp_vmax=1000)
+    result = w._normalize_frame(frame)
+    assert result[0, 0] == 0
+    assert result[1, 0] == 255
+    assert result[1, 1] == 255  # clamped
+    assert 120 <= result[0, 1] <= 135  # ~127
+
+
+def test_show4dstem_vmin_vmax_summary(capsys):
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4DSTEM(data, dp_vmin=0, dp_vmax=5000, vi_vmin=10, vi_vmax=500)
+    w.summary()
+    out = capsys.readouterr().out
+    assert "dp_vmin=0" in out
+    assert "dp_vmax=5000" in out
+    assert "vi_vmin=10" in out
+    assert "vi_vmax=500" in out

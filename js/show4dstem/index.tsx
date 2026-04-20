@@ -1041,6 +1041,11 @@ function Show4DSTEM() {
   const [dpVmaxPct, setDpVmaxPct] = useModelState<number>("dp_vmax_pct");
   const [viVminPct, setViVminPct] = useModelState<number>("vi_vmin_pct");
   const [viVmaxPct, setViVmaxPct] = useModelState<number>("vi_vmax_pct");
+  // Absolute intensity bounds (override percentile sliders when both set)
+  const [traitDpVmin] = useModelState<number | null>("dp_vmin");
+  const [traitDpVmax] = useModelState<number | null>("dp_vmax");
+  const [traitViVmin] = useModelState<number | null>("vi_vmin");
+  const [traitViVmax] = useModelState<number | null>("vi_vmax");
   // Scale mode: "linear" | "log" | "power"
   const [dpScaleMode, setDpScaleMode] = useModelState<"linear" | "log" | "power">("dp_scale_mode");
   const [dpPowerExp] = useModelState<number>("dp_power_exp");
@@ -1565,8 +1570,22 @@ function Show4DSTEM() {
     // Compute actual min/max of scaled data for normalization
     const { min: dataMin, max: dataMax } = findDataRange(scaled);
 
-    // Apply vmin/vmax percentile clipping
-    const { vmin, vmax } = sliderRange(dataMin, dataMax, dpVminPct, dpVmaxPct);
+    // Apply absolute bounds or percentile clipping
+    let vmin: number, vmax: number;
+    if (traitDpVmin != null && traitDpVmax != null) {
+      if (dpScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitDpVmin, 0));
+        vmax = Math.log1p(Math.max(traitDpVmax, 0));
+      } else if (dpScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitDpVmin, 0), dpPowerExp);
+        vmax = Math.pow(Math.max(traitDpVmax, 0), dpPowerExp);
+      } else {
+        vmin = traitDpVmin;
+        vmax = traitDpVmax;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(dataMin, dataMax, dpVminPct, dpVmaxPct));
+    }
 
     let offscreen = dpOffscreenRef.current;
     if (!offscreen) {
@@ -1593,7 +1612,7 @@ function Show4DSTEM() {
     dpColorbarVminRef.current = vmin;
     dpColorbarVmaxRef.current = vmax;
     setDpOffscreenVersion(v => v + 1);
-  }, [frameBytes, summedDpBytes, viRoiMode, detRows, detCols, dpColormap, dpVminPct, dpVmaxPct, dpScaleMode, dpPowerExp]);
+  }, [frameBytes, summedDpBytes, viRoiMode, detRows, detCols, dpColormap, dpVminPct, dpVmaxPct, dpScaleMode, dpPowerExp, traitDpVmin, traitDpVmax]);
 
   // Cheap: zoom/pan redraw — just drawImage from cached offscreen
   // useLayoutEffect prevents black flash when canvas dimensions change (resize)
@@ -1666,8 +1685,22 @@ function Show4DSTEM() {
       dataMax = r.max;
     }
 
-    // Apply vmin/vmax percentile clipping
-    const { vmin, vmax } = sliderRange(dataMin, dataMax, viVminPct, viVmaxPct);
+    // Apply absolute bounds or percentile clipping
+    let vmin: number, vmax: number;
+    if (traitViVmin != null && traitViVmax != null) {
+      if (viScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitViVmin, 0));
+        vmax = Math.log1p(Math.max(traitViVmax, 0));
+      } else if (viScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitViVmin, 0), viPowerExp);
+        vmax = Math.pow(Math.max(traitViVmax, 0), viPowerExp);
+      } else {
+        vmin = traitViVmin;
+        vmax = traitViVmax;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(dataMin, dataMax, viVminPct, viVmaxPct));
+    }
 
     const lut = COLORMAPS[viColormap] || COLORMAPS.inferno;
     let offscreen = viOffscreenRef.current;
@@ -1694,7 +1727,7 @@ function Show4DSTEM() {
     setViOffscreenVersion(v => v + 1);
     // Note: viDataMin/viDataMax intentionally not in deps - they arrive with virtualImageBytes
     // and we have a fallback if they're stale
-  }, [virtualImageBytes, shapeRows, shapeCols, viColormap, viVminPct, viVmaxPct, viScaleMode, viPowerExp]);
+  }, [virtualImageBytes, shapeRows, shapeCols, viColormap, viVminPct, viVmaxPct, viScaleMode, viPowerExp, traitViVmin, traitViVmax]);
 
   // Cheap: VI zoom/pan redraw — just drawImage from cached offscreen
   React.useLayoutEffect(() => {
@@ -3497,7 +3530,21 @@ function Show4DSTEM() {
     const processed = dpScaleMode === "log" ? applyLogScale(frameData) : frameData;
     const lut = COLORMAPS[dpColormap] || COLORMAPS.inferno;
     const { min: dMin, max: dMax } = findDataRange(processed);
-    const { vmin, vmax } = sliderRange(dMin, dMax, dpVminPct, dpVmaxPct);
+    let vmin: number, vmax: number;
+    if (traitDpVmin != null && traitDpVmax != null) {
+      if (dpScaleMode === "log") {
+        vmin = Math.log1p(Math.max(traitDpVmin, 0));
+        vmax = Math.log1p(Math.max(traitDpVmax, 0));
+      } else if (dpScaleMode === "power") {
+        vmin = Math.pow(Math.max(traitDpVmin, 0), dpPowerExp);
+        vmax = Math.pow(Math.max(traitDpVmax, 0), dpPowerExp);
+      } else {
+        vmin = traitDpVmin;
+        vmax = traitDpVmax;
+      }
+    } else {
+      ({ vmin, vmax } = sliderRange(dMin, dMax, dpVminPct, dpVmaxPct));
+    }
     const offscreen = renderToOffscreen(processed, detCols, detRows, lut, vmin, vmax);
     if (!offscreen) return;
     const kPxAngstrom = kPixelSize > 0 && kCalibrated ? kPixelSize : 0;
