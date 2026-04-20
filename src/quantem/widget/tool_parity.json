@@ -61,6 +61,10 @@
     "MetricExplorer": {
       "tool_groups": ["display", "export", "all"],
       "aliases": {}
+    },
+    "ShowDiffraction": {
+      "tool_groups": ["display", "histogram", "stats", "navigation", "view", "export", "spots", "all"],
+      "aliases": {}
     }
   },
   "viewer_widgets": ["Show1D", "Show2D", "Show3D", "Show3DVolume", "Show4D", "Show4DSTEM", "ShowComplex2D"],
