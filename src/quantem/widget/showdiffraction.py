@@ -265,10 +265,12 @@ class ShowDiffraction(anywidget.AnyWidget):
             data = data.array
 
         # ── Convert to numpy float32 ─────────────────────────────────────
-        data_np = to_numpy(data).astype(np.float32)
+        data_np = to_numpy(data)
+        is_integer = np.issubdtype(data_np.dtype, np.integer)
+        data_np = data_np.astype(np.float32)
 
-        # ── Hot pixel removal (uint16 data) ──────────────────────────────
-        if hasattr(data, "dtype") and np.issubdtype(getattr(data, "dtype", np.float32), np.integer):
+        # ── Hot pixel removal (integer data like uint16) ─────────────────
+        if is_integer:
             global_max = float(data_np.max())
             p999 = float(np.percentile(data_np, 99.9))
             if global_max > p999 * 5:

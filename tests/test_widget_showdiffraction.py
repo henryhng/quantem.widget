@@ -335,8 +335,8 @@ def test_showdiffraction_accepts_ioresult():
 
 
 def test_showdiffraction_hot_pixel_removal():
-    data = np.ones((4, 4, 8, 8), dtype=np.uint16) * 100
-    data[:, :, 3, 5] = 65535  # hot pixel
+    data = np.ones((4, 4, 32, 32), dtype=np.uint16) * 100
+    data[0, 0, 3, 5] = 65535  # single hot pixel (1 out of 16384)
     w = ShowDiffraction(data, verbose=False)
     frame = w._get_frame(0, 0)
     assert frame[3, 5] == 0  # hot pixel removed

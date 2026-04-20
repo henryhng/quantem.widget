@@ -6,22 +6,20 @@
  */
 
 import * as React from "react";
-import { createRender, useModelState, useModel } from "@anywidget/react";
+import { createRender, useModelState } from "@anywidget/react";
 import Box from "@mui/material/Box";
 import Typography from "@mui/material/Typography";
 import Stack from "@mui/material/Stack";
 import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
-import Menu from "@mui/material/Menu";
 import Switch from "@mui/material/Switch";
 import Button from "@mui/material/Button";
-import Tooltip from "@mui/material/Tooltip";
 import { useTheme } from "../theme";
-import { drawScaleBarHiDPI, drawColorbar, canvasToPDF } from "../scalebar";
-import { extractFloat32, formatNumber, downloadBlob } from "../format";
+import { drawScaleBarHiDPI, drawColorbar } from "../scalebar";
+import { formatNumber, downloadBlob } from "../format";
 import { computeHistogramFromBytes } from "../histogram";
-import { findDataRange, applyLogScale, sliderRange } from "../stats";
-import { COLORMAPS, COLORMAP_NAMES, applyColormap, renderToOffscreen } from "../colormaps";
+import { findDataRange, sliderRange } from "../stats";
+import { COLORMAPS, COLORMAP_NAMES, applyColormap } from "../colormaps";
 import { computeToolVisibility } from "../tool-parity";
 import "./showdiffraction.css";
 
@@ -165,9 +163,7 @@ interface SpotDict {
 // ============================================================================
 
 function ShowDiffraction() {
-  const model = useModel();
-  const themeInfo = useTheme();
-  const themeColors = themeInfo.colors;
+  const { themeInfo, colors: themeColors } = useTheme();
 
   const themedSelect = {
     "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: 10, color: themeColors.text },
@@ -199,7 +195,7 @@ function ShowDiffraction() {
   const [pixelSize] = useModelState<number>("pixel_size");
   const [spots] = useModelState<SpotDict[]>("spots");
   const [snapEnabled, setSnapEnabled] = useModelState<boolean>("snap_enabled");
-  const [snapRadius, setSnapRadius] = useModelState<number>("snap_radius");
+  const [snapRadius] = useModelState<number>("snap_radius");
   const [, setSpotAddRequest] = useModelState<number[]>("_spot_add_request");
   const [, setSpotUndoRequest] = useModelState<boolean>("_spot_undo_request");
   const [, setSpotClearRequest] = useModelState<boolean>("_spot_clear_request");
@@ -207,13 +203,12 @@ function ShowDiffraction() {
   const [dpScaleMode, setDpScaleMode] = useModelState<string>("dp_scale_mode");
   const [dpVminPct, setDpVminPct] = useModelState<number>("dp_vmin_pct");
   const [dpVmaxPct, setDpVmaxPct] = useModelState<number>("dp_vmax_pct");
-  const [viColormap, setViColormap] = useModelState<string>("vi_colormap");
-  const [viVminPct, setViVminPct] = useModelState<number>("vi_vmin_pct");
-  const [viVmaxPct, setViVmaxPct] = useModelState<number>("vi_vmax_pct");
+  const [viColormap] = useModelState<string>("vi_colormap");
+  const [viVminPct] = useModelState<number>("vi_vmin_pct");
+  const [viVmaxPct] = useModelState<number>("vi_vmax_pct");
   const [dpStats] = useModelState<number[]>("dp_stats");
   const [viStats] = useModelState<number[]>("vi_stats");
-  const [dpGlobalMin] = useModelState<number>("dp_global_min");
-  const [dpGlobalMax] = useModelState<number>("dp_global_max");
+  // dp_global_min/max available via useModelState if needed for histogram
   const [showStats] = useModelState<boolean>("show_stats");
   const [showControls] = useModelState<boolean>("show_controls");
   const [disabledTools] = useModelState<string[]>("disabled_tools");
@@ -228,11 +223,11 @@ function ShowDiffraction() {
   const hideDisplay = toolVisibility.isHidden("display");
   const hideExport = toolVisibility.isHidden("export");
   const hideSpots = toolVisibility.isHidden("spots");
-  const lockSpots = toolVisibility.isDisabled("spots");
+  const lockSpots = toolVisibility.isLocked("spots");
 
   // ── Local UI state ──────────────────────────────────────────────────
   const CANVAS_SIZE = 384;
-  const [canvasSize, setCanvasSize] = React.useState(CANVAS_SIZE);
+  const canvasSize = CANVAS_SIZE;
   const [dpZoom, setDpZoom] = React.useState(1);
   const [dpPanX, setDpPanX] = React.useState(0);
   const [dpPanY, setDpPanY] = React.useState(0);
@@ -294,8 +289,6 @@ function ShowDiffraction() {
     canvas.height = canvasSize;
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, canvasSize, canvasSize);
-    const scX = canvasSize / detCols;
-    const scY = canvasSize / detRows;
     const offX = (canvasSize - canvasSize * dpZoom) / 2 + dpPanX;
     const offY = (canvasSize - canvasSize * dpZoom) / 2 + dpPanY;
     ctx.drawImage(offscreen, offX, offY, canvasSize * dpZoom, canvasSize * dpZoom);
@@ -434,8 +427,8 @@ function ShowDiffraction() {
     ctx.stroke();
 
     // Scale bar
-    if (pixelSize > 0) {
-      drawScaleBarHiDPI(ctx, cssW, cssW, pixelSize, viZoom);
+    if (pixelSize > 0 && canvas) {
+      drawScaleBarHiDPI(canvas, DPR, viZoom, pixelSize, "Å", shapeCols);
     }
 
     // Zoom indicator
