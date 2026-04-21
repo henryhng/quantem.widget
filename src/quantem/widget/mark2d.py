@@ -1422,6 +1422,9 @@ class Mark2D(anywidget.AnyWidget):
                         outline="white",
                     )
 
+        if fmt == "pdf":
+            Image.init()
+            img = img.convert("RGB")
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(path), dpi=(dpi, dpi))
         return path
