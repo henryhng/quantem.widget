@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from quantem.core.datastructures import Dataset2d, Dataset3d, Dataset4d, Dataset4dstem
-from quantem.widget import Align2D, Edit2D, Mark2D, Show2D, Show3D, Show3DVolume, Show4D, Show4DSTEM, ShowComplex2D
+from quantem.widget import Align2D, Edit2D, Mark2D, Show2D, Show3D, Show3DVolume, Show4D, Show4DSTEM, ShowComplex2D, ShowDiffraction
 
 # =========================================================================
 # Show2D + Dataset2d
@@ -408,3 +408,41 @@ def test_showcomplex2d_dataset_explicit_override():
     widget = ShowComplex2D(ds, title="My Title", pixel_size=3.0)
     assert widget.title == "My Title"
     assert widget.pixel_size == pytest.approx(3.0)
+
+# =========================================================================
+# ShowDiffraction + Dataset4dstem
+# =========================================================================
+
+def test_showdiffraction_dataset4dstem_extracts_calibration():
+    ds = Dataset4dstem.from_array(
+        array=np.random.rand(8, 8, 16, 16).astype(np.float32),
+        name="Diffraction Scan",
+        sampling=(2.39, 2.39, 0.025, 0.025),
+        units=("Å", "Å", "1/Å", "1/Å"),
+    )
+    w = ShowDiffraction(ds, verbose=False)
+    assert w.title == "Diffraction Scan"
+    assert w.pixel_size == pytest.approx(2.39)
+    assert w.k_pixel_size == pytest.approx(0.025)
+    assert w.k_calibrated is True
+
+def test_showdiffraction_dataset4dstem_nm_to_angstrom():
+    ds = Dataset4dstem.from_array(
+        array=np.random.rand(8, 8, 16, 16).astype(np.float32),
+        name="test",
+        sampling=(0.239, 0.239, 0.025, 0.025),
+        units=("nm", "nm", "1/Å", "1/Å"),
+    )
+    w = ShowDiffraction(ds, verbose=False)
+    assert w.pixel_size == pytest.approx(2.39)  # 0.239 nm = 2.39 Å
+
+def test_showdiffraction_dataset4dstem_explicit_overrides():
+    ds = Dataset4dstem.from_array(
+        array=np.random.rand(8, 8, 16, 16).astype(np.float32),
+        name="test",
+        sampling=(2.39, 2.39, 0.025, 0.025),
+        units=("Å", "Å", "1/Å", "1/Å"),
+    )
+    w = ShowDiffraction(ds, pixel_size=5.0, k_pixel_size=0.1, verbose=False)
+    assert w.pixel_size == pytest.approx(5.0)
+    assert w.k_pixel_size == pytest.approx(0.1)

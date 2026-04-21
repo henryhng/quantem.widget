@@ -12,14 +12,16 @@ import Typography from "@mui/material/Typography";
 import Stack from "@mui/material/Stack";
 import Select from "@mui/material/Select";
 import MenuItem from "@mui/material/MenuItem";
+import Menu from "@mui/material/Menu";
 import Switch from "@mui/material/Switch";
 import Button from "@mui/material/Button";
+import Tooltip from "@mui/material/Tooltip";
 import { useTheme } from "../theme";
-import { drawScaleBarHiDPI, drawColorbar } from "../scalebar";
+import { drawScaleBarHiDPI, drawColorbar, exportFigure, canvasToPDF } from "../scalebar";
 import { formatNumber, downloadBlob } from "../format";
 import { computeHistogramFromBytes } from "../histogram";
-import { findDataRange, sliderRange } from "../stats";
-import { COLORMAPS, COLORMAP_NAMES, applyColormap } from "../colormaps";
+import { findDataRange, sliderRange, applyLogScaleInPlace } from "../stats";
+import { COLORMAPS, COLORMAP_NAMES, applyColormap, renderToOffscreen } from "../colormaps";
 import { computeToolVisibility } from "../tool-parity";
 import "./showdiffraction.css";
 
@@ -30,6 +32,7 @@ import "./showdiffraction.css";
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 10;
 const DPR = window.devicePixelRatio || 1;
+const CANVAS_MIN = 384;
 const SPACING = { XS: 4, SM: 8, MD: 12, LG: 16 };
 const typography = {
   label: { fontSize: 11 },
@@ -57,6 +60,66 @@ const upwardMenuProps = {
   anchorOrigin: { vertical: "top" as const, horizontal: "left" as const },
   transformOrigin: { vertical: "bottom" as const, horizontal: "left" as const },
 };
+
+// ============================================================================
+// InfoTooltip + KeyboardShortcuts (same pattern as Show4DSTEM)
+// ============================================================================
+
+function InfoTooltip({ text, theme = "dark" }: { text: React.ReactNode; theme?: "light" | "dark" }) {
+  const isDark = theme === "dark";
+  const content = typeof text === "string"
+    ? <Typography sx={{ fontSize: 11, lineHeight: 1.4 }}>{text}</Typography>
+    : text;
+  return (
+    <Tooltip
+      title={content}
+      arrow
+      placement="bottom"
+      componentsProps={{
+        tooltip: {
+          sx: {
+            bgcolor: isDark ? "#333" : "#fff",
+            color: isDark ? "#ddd" : "#333",
+            border: `1px solid ${isDark ? "#555" : "#ccc"}`,
+            maxWidth: 280,
+            p: 1,
+          },
+        },
+        arrow: {
+          sx: {
+            color: isDark ? "#333" : "#fff",
+            "&::before": { border: `1px solid ${isDark ? "#555" : "#ccc"}` },
+          },
+        },
+      }}
+    >
+      <Typography
+        component="span"
+        sx={{
+          fontSize: 12,
+          color: isDark ? "#888" : "#666",
+          cursor: "help",
+          ml: 0.5,
+          "&:hover": { color: isDark ? "#aaa" : "#444" },
+        }}
+      >
+        ⓘ
+      </Typography>
+    </Tooltip>
+  );
+}
+
+function KeyboardShortcuts({ items }: { items: [string, string][] }) {
+  return (
+    <Box component="table" sx={{ borderCollapse: "collapse", "& td": { py: 0.25, fontSize: 11, lineHeight: 1.3, verticalAlign: "top" }, "& td:first-of-type": { pr: 1.5, opacity: 0.7, fontFamily: "monospace", fontSize: 10, whiteSpace: "nowrap" } }}>
+      <tbody>
+        {items.map(([key, desc], i) => (
+          <tr key={i}><td>{key}</td><td>{desc}</td></tr>
+        ))}
+      </tbody>
+    </Box>
+  );
+}
 
 // ============================================================================
 // Helper: Histogram (inline, same pattern as other widgets)
@@ -164,6 +227,7 @@ interface SpotDict {
 
 function ShowDiffraction() {
   const { themeInfo, colors: themeColors } = useTheme();
+  const rootRef = React.useRef<HTMLDivElement>(null);
 
   const themedSelect = {
     "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: 10, color: themeColors.text },
@@ -203,12 +267,11 @@ function ShowDiffraction() {
   const [dpScaleMode, setDpScaleMode] = useModelState<string>("dp_scale_mode");
   const [dpVminPct, setDpVminPct] = useModelState<number>("dp_vmin_pct");
   const [dpVmaxPct, setDpVmaxPct] = useModelState<number>("dp_vmax_pct");
-  const [viColormap] = useModelState<string>("vi_colormap");
-  const [viVminPct] = useModelState<number>("vi_vmin_pct");
-  const [viVmaxPct] = useModelState<number>("vi_vmax_pct");
+  const [viColormap, setViColormap] = useModelState<string>("vi_colormap");
+  const [viVminPct, setViVminPct] = useModelState<number>("vi_vmin_pct");
+  const [viVmaxPct, setViVmaxPct] = useModelState<number>("vi_vmax_pct");
   const [dpStats] = useModelState<number[]>("dp_stats");
   const [viStats] = useModelState<number[]>("vi_stats");
-  // dp_global_min/max available via useModelState if needed for histogram
   const [showStats] = useModelState<boolean>("show_stats");
   const [showControls] = useModelState<boolean>("show_controls");
   const [disabledTools] = useModelState<string[]>("disabled_tools");
@@ -223,11 +286,20 @@ function ShowDiffraction() {
   const hideDisplay = toolVisibility.isHidden("display");
   const hideExport = toolVisibility.isHidden("export");
   const hideSpots = toolVisibility.isHidden("spots");
+  const hideNavigation = toolVisibility.isHidden("navigation");
+  const hideView = toolVisibility.isHidden("view");
   const lockSpots = toolVisibility.isLocked("spots");
+  const lockExport = toolVisibility.isLocked("export");
+  const lockDisplay = toolVisibility.isLocked("display");
+  const lockHistogram = toolVisibility.isLocked("histogram");
+  const lockNavigation = toolVisibility.isLocked("navigation");
+  const lockView = toolVisibility.isLocked("view");
+  const lockStats = toolVisibility.isLocked("stats");
 
   // ── Local UI state ──────────────────────────────────────────────────
-  const CANVAS_SIZE = 384;
-  const canvasSize = CANVAS_SIZE;
+  const [canvasSize, setCanvasSize] = React.useState(CANVAS_MIN);
+  const [isResizingCanvas, setIsResizingCanvas] = React.useState(false);
+  const [resizeCanvasStart, setResizeCanvasStart] = React.useState<{ x: number; y: number; size: number } | null>(null);
   const [dpZoom, setDpZoom] = React.useState(1);
   const [dpPanX, setDpPanX] = React.useState(0);
   const [dpPanY, setDpPanY] = React.useState(0);
@@ -235,7 +307,9 @@ function ShowDiffraction() {
   const [viPanX, setViPanX] = React.useState(0);
   const [viPanY, setViPanY] = React.useState(0);
   const [dpHistData, setDpHistData] = React.useState<Float32Array | null>(null);
+  const [viHistData, setViHistData] = React.useState<Float32Array | null>(null);
   const [cursorInfo, setCursorInfo] = React.useState<{ row: number; col: number; value: number } | null>(null);
+  const [dpExportAnchor, setDpExportAnchor] = React.useState<HTMLElement | null>(null);
 
   // Canvas refs
   const dpCanvasRef = React.useRef<HTMLCanvasElement>(null);
@@ -244,19 +318,60 @@ function ShowDiffraction() {
   const viCanvasRef = React.useRef<HTMLCanvasElement>(null);
   const viUiRef = React.useRef<HTMLCanvasElement>(null);
   const viOffscreenRef = React.useRef<HTMLCanvasElement | null>(null);
+  const rawDpDataRef = React.useRef<Float32Array | null>(null);
   const [dpVersion, setDpVersion] = React.useState(0);
   const [viVersion, setViVersion] = React.useState(0);
   const dpVminRef = React.useRef(0);
   const dpVmaxRef = React.useRef(1);
 
+  // ── Canvas resize handle ────────────────────────────────────────────
+  const handleCanvasResizeStart = (e: React.MouseEvent) => {
+    if (lockView) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setIsResizingCanvas(true);
+    setResizeCanvasStart({ x: e.clientX, y: e.clientY, size: canvasSize });
+  };
+
+  React.useEffect(() => {
+    if (!isResizingCanvas) return;
+    let rafId = 0;
+    let latestSize = resizeCanvasStart ? resizeCanvasStart.size : canvasSize;
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeCanvasStart) return;
+      const delta = Math.max(e.clientX - resizeCanvasStart.x, e.clientY - resizeCanvasStart.y);
+      latestSize = Math.max(CANVAS_MIN, resizeCanvasStart.size + delta);
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          rafId = 0;
+          setCanvasSize(latestSize);
+        });
+      }
+    };
+    const handleMouseUp = () => {
+      cancelAnimationFrame(rafId);
+      setCanvasSize(latestSize);
+      setIsResizingCanvas(false);
+      setResizeCanvasStart(null);
+    };
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      cancelAnimationFrame(rafId);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizingCanvas, resizeCanvasStart]);
+
   // ── DP rendering (expensive: colormap) ──────────────────────────────
   React.useEffect(() => {
     if (!frameBytes || !frameBytes.byteLength) return;
     const raw = new Float32Array(frameBytes.buffer, frameBytes.byteOffset, frameBytes.byteLength / 4);
+    rawDpDataRef.current = raw;
     let scaled: Float32Array;
     if (dpScaleMode === "log") {
       scaled = new Float32Array(raw.length);
-      for (let i = 0; i < raw.length; i++) scaled[i] = Math.log1p(Math.max(0, raw[i]));
+      applyLogScaleInPlace(raw, scaled);
     } else {
       scaled = raw;
     }
@@ -352,6 +467,11 @@ function ShowDiffraction() {
     const lut = COLORMAPS[dpColormap] || COLORMAPS.inferno;
     drawColorbar(ctx, cssW, cssW, lut, dpVminRef.current, dpVmaxRef.current, dpScaleMode === "log");
 
+    // K-space scale bar (use "mrad" unit type for reciprocal space)
+    if (kCalibrated && kPixelSize > 0) {
+      drawScaleBarHiDPI(canvas, DPR, dpZoom, kPixelSize, "mrad", detCols);
+    }
+
     // Zoom indicator
     if (dpZoom !== 1) {
       ctx.fillStyle = "rgba(255,255,255,0.7)";
@@ -362,7 +482,7 @@ function ShowDiffraction() {
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [dpVersion, dpZoom, dpPanX, dpPanY, canvasSize, detRows, detCols, centerRow, centerCol, bfRadius, spots, dpColormap, dpScaleMode, themeInfo.theme]);
+  }, [dpVersion, dpZoom, dpPanX, dpPanY, canvasSize, detRows, detCols, centerRow, centerCol, bfRadius, spots, dpColormap, dpScaleMode, kCalibrated, kPixelSize, themeInfo.theme]);
 
   // ── VI rendering (expensive: colormap) ──────────────────────────────
   React.useEffect(() => {
@@ -380,6 +500,7 @@ function ShowDiffraction() {
     const imgData = ctx.createImageData(shapeCols, shapeRows);
     applyColormap(raw, imgData.data, lut, vmin, vmax);
     ctx.putImageData(imgData, 0, 0);
+    setViHistData(raw);
     setViVersion(v => v + 1);
   }, [virtualImageBytes, viColormap, viVminPct, viVmaxPct, shapeRows, shapeCols]);
 
@@ -565,7 +686,7 @@ function ShowDiffraction() {
     };
   }, []);
 
-  // ── Export DP ───────────────────────────────────────────────────────
+  // ── Export handlers ─────────────────────────────────────────────────
   const handleCopyDP = () => {
     const offscreen = dpOffscreenRef.current;
     if (!offscreen) return;
@@ -577,11 +698,110 @@ function ShowDiffraction() {
     });
   };
 
-  // ── Keyboard ────────────────────────────────────────────────────────
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "r" || e.key === "R") { resetDpView(); resetViView(); }
-    if (e.key === "z" || e.key === "Z") { if (!lockSpots) setSpotUndoRequest(true); }
+  const handleExportFigure = (withColorbar: boolean) => {
+    if (lockExport) return;
+    setDpExportAnchor(null);
+    const frameData = rawDpDataRef.current;
+    if (!frameData) return;
+    let processed: Float32Array;
+    if (dpScaleMode === "log") {
+      processed = new Float32Array(frameData.length);
+      applyLogScaleInPlace(frameData, processed);
+    } else {
+      processed = frameData;
+    }
+    const lut = COLORMAPS[dpColormap] || COLORMAPS.inferno;
+    const { min: dMin, max: dMax } = findDataRange(processed);
+    const { vmin, vmax } = sliderRange(dMin, dMax, dpVminPct, dpVmaxPct);
+    const offscreen = renderToOffscreen(processed, detCols, detRows, lut, vmin, vmax);
+    if (!offscreen) return;
+    const kPxVal = kPixelSize > 0 && kCalibrated ? kPixelSize : 0;
+    const figCanvas = exportFigure({
+      imageCanvas: offscreen,
+      title: `DP at (${posRow}, ${posCol})`,
+      lut,
+      vmin,
+      vmax,
+      logScale: dpScaleMode === "log",
+      pixelSize: kPxVal > 0 ? kPxVal : undefined,
+      showColorbar: withColorbar,
+      showScaleBar: kPxVal > 0,
+    });
+    canvasToPDF(figCanvas).then((blob) => downloadBlob(blob, "showdiffraction_dp_figure.pdf")).catch(console.error);
   };
+
+  const handleExportPng = () => {
+    if (lockExport) return;
+    setDpExportAnchor(null);
+    if (!dpCanvasRef.current) return;
+    dpCanvasRef.current.toBlob((b) => { if (b) downloadBlob(b, "showdiffraction_dp.png"); }, "image/png");
+  };
+
+  // ── Keyboard ────────────────────────────────────────────────────────
+  const isTypingTarget = React.useCallback((target: EventTarget | null): boolean => {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable) return true;
+    return target.closest("input, textarea, select, [role='textbox'], [contenteditable='true']") !== null;
+  }, []);
+
+  const handleRootMouseDownCapture = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("canvas")) rootRef.current?.focus();
+  }, []);
+
+  const handleKeyDown = React.useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isTypingTarget(e.target)) return;
+
+    const step = e.shiftKey ? 10 : 1;
+    let handled = false;
+
+    switch (e.key) {
+      case "ArrowUp":
+        if (!lockNavigation) {
+          setPosRow(Math.max(0, posRow - step));
+          handled = true;
+        }
+        break;
+      case "ArrowDown":
+        if (!lockNavigation) {
+          setPosRow(Math.min(shapeRows - 1, posRow + step));
+          handled = true;
+        }
+        break;
+      case "ArrowLeft":
+        if (!lockNavigation) {
+          setPosCol(Math.max(0, posCol - step));
+          handled = true;
+        }
+        break;
+      case "ArrowRight":
+        if (!lockNavigation) {
+          setPosCol(Math.min(shapeCols - 1, posCol + step));
+          handled = true;
+        }
+        break;
+      case "r":
+      case "R":
+        if (!lockView) {
+          resetDpView();
+          resetViView();
+          handled = true;
+        }
+        break;
+      case "z":
+      case "Z":
+        if (!lockSpots) {
+          setSpotUndoRequest(true);
+          handled = true;
+        }
+        break;
+    }
+
+    if (handled) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, [isTypingTarget, lockNavigation, lockSpots, lockView, posRow, posCol, shapeRows, shapeCols]);
 
   // ── JSX ─────────────────────────────────────────────────────────────
   const canvasBox = {
@@ -595,18 +815,46 @@ function ShowDiffraction() {
 
   return (
     <Box
+      ref={rootRef}
       sx={{ p: `${SPACING.LG}px`, bgcolor: themeColors.bg, color: themeColors.text, outline: "none" }}
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      onMouseDownCapture={handleRootMouseDownCapture}
     >
       {/* Header */}
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: `${SPACING.SM}px` }}>
-        <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{title || "Diffraction"}</Typography>
+        <Stack direction="row" alignItems="center" spacing={`${SPACING.XS}px`}>
+          <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{title || "Diffraction"}</Typography>
+          <InfoTooltip theme={themeInfo.theme} text={
+            <KeyboardShortcuts items={[
+              ["Click", "Add spot on DP"],
+              ["← → ↑ ↓", "Navigate scan position"],
+              ["Shift+Arrow", "Move 10 steps"],
+              ["Scroll", "Zoom in/out"],
+              ["Shift+Drag", "Pan"],
+              ["R", "Reset zoom/pan"],
+              ["Z", "Undo last spot"],
+              ["Double-click", "Reset view"],
+            ]} />
+          } />
+        </Stack>
         <Stack direction="row" spacing={`${SPACING.XS}px`}>
           {!hideExport && (
-            <Button size="small" sx={{ ...compactButton, color: themeColors.accent }} onClick={handleCopyDP}>
+            <Button size="small" sx={{ ...compactButton, color: themeColors.accent }} disabled={lockExport} onClick={handleCopyDP}>
               COPY
             </Button>
+          )}
+          {!hideExport && (
+            <Button size="small" sx={{ ...compactButton, color: themeColors.accent }} disabled={lockExport} onClick={(e) => setDpExportAnchor(e.currentTarget)}>
+              EXPORT
+            </Button>
+          )}
+          {!hideExport && (
+            <Menu anchorEl={dpExportAnchor} open={Boolean(dpExportAnchor)} onClose={() => setDpExportAnchor(null)} anchorOrigin={{ vertical: "bottom", horizontal: "left" }} transformOrigin={{ vertical: "top", horizontal: "left" }} sx={{ zIndex: 9999 }}>
+              <MenuItem disabled={lockExport} onClick={() => handleExportFigure(true)} sx={{ fontSize: 12 }}>PDF + colorbar</MenuItem>
+              <MenuItem disabled={lockExport} onClick={() => handleExportFigure(false)} sx={{ fontSize: 12 }}>PDF</MenuItem>
+              <MenuItem disabled={lockExport} onClick={handleExportPng} sx={{ fontSize: 12 }}>PNG</MenuItem>
+            </Menu>
           )}
         </Stack>
       </Stack>
@@ -634,10 +882,14 @@ function ShowDiffraction() {
               onWheel={handleDpWheel}
               onDoubleClick={resetDpView}
             />
+            {/* Resize handle */}
+            {!hideView && (
+              <Box onMouseDown={handleCanvasResizeStart} sx={{ position: "absolute", bottom: 0, right: 0, width: 16, height: 16, cursor: lockView ? "default" : "nwse-resize", opacity: lockView ? 0.2 : 0.6, background: `linear-gradient(135deg, transparent 50%, ${themeColors.accent} 50%)`, "&:hover": { opacity: lockView ? 0.2 : 1 } }} />
+            )}
           </Box>
           {/* DP Stats */}
           {!hideStats && showStats && dpStats && dpStats.length === 4 && (
-            <Box sx={{ mt: `${SPACING.XS}px`, px: 1, py: 0.25, display: "flex", gap: 2 }}>
+            <Box sx={{ mt: `${SPACING.XS}px`, px: 1, py: 0.25, display: "flex", gap: 2, opacity: lockStats ? 0.6 : 1 }}>
               <Typography sx={{ ...typography.value, color: themeColors.textMuted }}>
                 Mean <Box component="span" sx={{ color: themeColors.accent }}>{formatStat(dpStats[0])}</Box>
               </Typography>
@@ -672,10 +924,14 @@ function ShowDiffraction() {
               onWheel={handleViWheel}
               onDoubleClick={resetViView}
             />
+            {/* Resize handle */}
+            {!hideView && (
+              <Box onMouseDown={handleCanvasResizeStart} sx={{ position: "absolute", bottom: 0, right: 0, width: 16, height: 16, cursor: lockView ? "default" : "nwse-resize", opacity: lockView ? 0.2 : 0.6, background: `linear-gradient(135deg, transparent 50%, ${themeColors.accent} 50%)`, "&:hover": { opacity: lockView ? 0.2 : 1 } }} />
+            )}
           </Box>
           {/* VI Stats */}
           {!hideStats && showStats && viStats && viStats.length === 4 && (
-            <Box sx={{ mt: `${SPACING.XS}px`, px: 1, py: 0.25, display: "flex", gap: 2 }}>
+            <Box sx={{ mt: `${SPACING.XS}px`, px: 1, py: 0.25, display: "flex", gap: 2, opacity: lockStats ? 0.6 : 1 }}>
               <Typography sx={{ ...typography.value, color: themeColors.textMuted }}>
                 Mean <Box component="span" sx={{ color: themeColors.accent }}>{formatStat(viStats[0])}</Box>
               </Typography>
@@ -772,12 +1028,13 @@ function ShowDiffraction() {
             {/* DP Colormap */}
             {!hideDisplay && (
               <Box sx={controlRow}>
-                <Typography sx={typography.label}>Colormap:</Typography>
+                <Typography sx={typography.label}>DP:</Typography>
                 <Select
                   size="small" value={dpColormap}
-                  onChange={(e) => setDpColormap(e.target.value)}
+                  onChange={(e) => { if (!lockDisplay) setDpColormap(e.target.value); }}
                   sx={themedSelect}
                   MenuProps={themedMenuProps}
+                  disabled={lockDisplay}
                 >
                   {COLORMAP_NAMES.map(n => <MenuItem key={n} value={n} sx={{ fontSize: 10 }}>{n}</MenuItem>)}
                 </Select>
@@ -790,9 +1047,10 @@ function ShowDiffraction() {
                 <Typography sx={typography.label}>Scale:</Typography>
                 <Select
                   size="small" value={dpScaleMode}
-                  onChange={(e) => setDpScaleMode(e.target.value)}
+                  onChange={(e) => { if (!lockDisplay) setDpScaleMode(e.target.value); }}
                   sx={{ ...themedSelect, minWidth: 60 }}
                   MenuProps={themedMenuProps}
+                  disabled={lockDisplay}
                 >
                   <MenuItem value="linear" sx={{ fontSize: 10 }}>Linear</MenuItem>
                   <MenuItem value="log" sx={{ fontSize: 10 }}>Log</MenuItem>
@@ -800,19 +1058,59 @@ function ShowDiffraction() {
               </Box>
             )}
 
-            {/* Histogram */}
+            {/* DP Histogram */}
             {!hideHistogram && (
               <Box sx={controlRow}>
+                <Typography sx={typography.label}>DP:</Typography>
                 <Histogram
                   data={dpHistData}
                   vminPct={dpVminPct}
                   vmaxPct={dpVmaxPct}
-                  onRangeChange={(min, max) => { setDpVminPct(min); setDpVmaxPct(max); }}
+                  onRangeChange={(min, max) => { if (!lockHistogram) { setDpVminPct(min); setDpVmaxPct(max); } }}
+                  theme={themeInfo.theme}
+                />
+              </Box>
+            )}
+
+            {/* VI Colormap */}
+            {!hideDisplay && (
+              <Box sx={controlRow}>
+                <Typography sx={typography.label}>VI:</Typography>
+                <Select
+                  size="small" value={viColormap}
+                  onChange={(e) => { if (!lockDisplay) setViColormap(String(e.target.value)); }}
+                  sx={{ ...themedSelect, minWidth: 65 }}
+                  MenuProps={themedMenuProps}
+                  disabled={lockDisplay}
+                >
+                  {COLORMAP_NAMES.map(n => <MenuItem key={n} value={n} sx={{ fontSize: 10 }}>{n}</MenuItem>)}
+                </Select>
+              </Box>
+            )}
+
+            {/* VI Histogram */}
+            {!hideHistogram && (
+              <Box sx={controlRow}>
+                <Typography sx={typography.label}>VI:</Typography>
+                <Histogram
+                  data={viHistData}
+                  vminPct={viVminPct}
+                  vmaxPct={viVmaxPct}
+                  onRangeChange={(min, max) => { if (!lockHistogram) { setViVminPct(min); setViVmaxPct(max); } }}
                   theme={themeInfo.theme}
                 />
               </Box>
             )}
           </Stack>
+
+          {/* Navigation info */}
+          {!hideNavigation && (
+            <Box sx={{ ...controlRow, mt: `${SPACING.XS}px` }}>
+              <Typography sx={{ ...typography.value, color: themeColors.textMuted }}>
+                Scan: ({posRow}, {posCol}) / ({shapeRows}×{shapeCols})
+              </Typography>
+            </Box>
+          )}
 
           {/* Center info */}
           <Box sx={{ ...controlRow, mt: `${SPACING.XS}px` }}>

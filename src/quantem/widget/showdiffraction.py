@@ -264,61 +264,15 @@ class ShowDiffraction(anywidget.AnyWidget):
                 k_calibrated = True
             data = data.array
 
-        # ── Convert to numpy float32 ─────────────────────────────────────
-        data_np = to_numpy(data)
-        is_integer = np.issubdtype(data_np.dtype, np.integer)
-        data_np = data_np.astype(np.float32)
-
-        # ── Hot pixel removal (integer data like uint16) ─────────────────
-        if is_integer:
-            global_max = float(data_np.max())
-            p999 = float(np.percentile(data_np, 99.9))
-            if global_max > p999 * 5:
-                data_np[data_np > p999 * 3] = 0
-
-        # ── Handle dimensionality ────────────────────────────────────────
-        ndim = data_np.ndim
-        if ndim == 3:
-            if scan_shape is not None:
-                self._scan_shape = scan_shape
-            else:
-                n = data_np.shape[0]
-                side = int(n**0.5)
-                if side * side != n:
-                    raise ValueError(
-                        f"Cannot infer square scan_shape from N={n}. "
-                        f"Provide scan_shape explicitly."
-                    )
-                self._scan_shape = (side, side)
-            self._det_shape = (data_np.shape[1], data_np.shape[2])
-        elif ndim == 4:
-            self._scan_shape = (data_np.shape[0], data_np.shape[1])
-            self._det_shape = (data_np.shape[2], data_np.shape[3])
-        else:
-            raise ValueError(f"Expected 3D or 4D array, got {ndim}D")
-
-        # ── Store data as torch tensor ───────────────────────────────────
-        device = torch.device(
+        # ── Parse and store data ─────────────────────────────────────────
+        self._device = torch.device(
             "mps"
             if torch.backends.mps.is_available()
             else "cuda"
             if torch.cuda.is_available()
             else "cpu"
         )
-        if data_np.size > 2**31 - 1 and device.type == "mps":
-            device = torch.device("cpu")
-        self._device = device
-
-        reshaped = data_np.reshape(
-            self._scan_shape[0], self._scan_shape[1], self._det_shape[0], self._det_shape[1]
-        )
-        self._data = torch.from_numpy(reshaped).to(self._device)
-
-        # ── Shape traits ─────────────────────────────────────────────────
-        self.shape_rows = self._scan_shape[0]
-        self.shape_cols = self._scan_shape[1]
-        self.det_rows = self._det_shape[0]
-        self.det_cols = self._det_shape[1]
+        self._ingest_data(data, scan_shape)
 
         # ── Calibration ──────────────────────────────────────────────────
         if pixel_size is not None:
@@ -376,10 +330,6 @@ class ShowDiffraction(anywidget.AnyWidget):
         if center is None and bf_radius is None:
             self.auto_detect_center()
 
-        # ── Global min/max ───────────────────────────────────────────────
-        self.dp_global_min = float(self._data.min().item())
-        self.dp_global_max = float(self._data.max().item())
-
         # ── Initial position ─────────────────────────────────────────────
         self.pos_row = self._scan_shape[0] // 2
         self.pos_col = self._scan_shape[1] // 2
@@ -410,6 +360,51 @@ class ShowDiffraction(anywidget.AnyWidget):
             else:
                 state = unwrap_state_payload(state)
             self.load_state_dict(state)
+
+    # =====================================================================
+    # Data ingestion (shared by __init__ and set_image)
+    # =====================================================================
+
+    def _ingest_data(self, data, scan_shape=None):
+        data_np = to_numpy(data)
+        is_integer = np.issubdtype(data_np.dtype, np.integer)
+        data_np = data_np.astype(np.float32)
+        if data_np.size > 2**31 - 1 and self._device.type == "mps":
+            self._device = torch.device("cpu")
+        if is_integer:
+            global_max = float(data_np.max())
+            p999 = float(np.percentile(data_np, 99.9))
+            if global_max > p999 * 5:
+                data_np[data_np > p999 * 3] = 0
+        ndim = data_np.ndim
+        if ndim == 3:
+            if scan_shape is not None:
+                self._scan_shape = scan_shape
+            else:
+                n = data_np.shape[0]
+                side = int(n**0.5)
+                if side * side != n:
+                    raise ValueError(
+                        f"Cannot infer square scan_shape from N={n}. "
+                        f"Provide scan_shape explicitly."
+                    )
+                self._scan_shape = (side, side)
+            self._det_shape = (data_np.shape[1], data_np.shape[2])
+        elif ndim == 4:
+            self._scan_shape = (data_np.shape[0], data_np.shape[1])
+            self._det_shape = (data_np.shape[2], data_np.shape[3])
+        else:
+            raise ValueError(f"Expected 3D or 4D array, got {ndim}D")
+        reshaped = data_np.reshape(
+            self._scan_shape[0], self._scan_shape[1], self._det_shape[0], self._det_shape[1]
+        )
+        self._data = torch.from_numpy(reshaped).to(self._device)
+        self.shape_rows = self._scan_shape[0]
+        self.shape_cols = self._scan_shape[1]
+        self.det_rows = self._det_shape[0]
+        self.det_cols = self._det_shape[1]
+        self.dp_global_min = float(self._data.min().item())
+        self.dp_global_max = float(self._data.max().item())
 
     # =====================================================================
     # Position
@@ -599,47 +594,145 @@ class ShowDiffraction(anywidget.AnyWidget):
 
     def set_image(self, data, scan_shape: tuple[int, int] | None = None) -> Self:
         """Replace data. Preserves display settings, clears spots."""
-        if hasattr(data, "array") and hasattr(data, "sampling"):
+        if isinstance(data, IOResult):
+            if data.pixel_size is not None:
+                self.pixel_size = float(data.pixel_size)
+            if data.title:
+                self.title = data.title
+            data = data.data
+        if hasattr(data, "sampling") and hasattr(data, "array"):
+            units = getattr(data, "units", ["pixels"] * 4)
+            if units[0] in ("Å", "angstrom", "A", "nm"):
+                px = float(data.sampling[0])
+                if units[0] == "nm":
+                    px *= 10
+                self.pixel_size = px
+            if len(units) > 2 and units[2] in ("1/Å", "1/A"):
+                self.k_pixel_size = float(data.sampling[2])
+                self.k_calibrated = True
+            if hasattr(data, "name") and data.name:
+                self.title = str(data.name)
             data = data.array
-        data_np = to_numpy(data).astype(np.float32)
-        ndim = data_np.ndim
-        if ndim == 3:
-            if scan_shape is not None:
-                self._scan_shape = scan_shape
-            else:
-                n = data_np.shape[0]
-                side = int(n**0.5)
-                if side * side != n:
-                    raise ValueError(f"Cannot infer square scan_shape from N={n}.")
-                self._scan_shape = (side, side)
-            self._det_shape = (data_np.shape[1], data_np.shape[2])
-        elif ndim == 4:
-            self._scan_shape = (data_np.shape[0], data_np.shape[1])
-            self._det_shape = (data_np.shape[2], data_np.shape[3])
-        else:
-            raise ValueError(f"Expected 3D or 4D array, got {ndim}D")
-
-        reshaped = data_np.reshape(
-            self._scan_shape[0], self._scan_shape[1], self._det_shape[0], self._det_shape[1]
-        )
-        self._data = torch.from_numpy(reshaped).to(self._device)
-
-        self.shape_rows = self._scan_shape[0]
-        self.shape_cols = self._scan_shape[1]
-        self.det_rows = self._det_shape[0]
-        self.det_cols = self._det_shape[1]
-
-        self.dp_global_min = float(self._data.min().item())
-        self.dp_global_max = float(self._data.max().item())
-
+        self._ingest_data(data, scan_shape)
         self.pos_row = min(self.pos_row, self.shape_rows - 1)
         self.pos_col = min(self.pos_col, self.shape_cols - 1)
-
         self.spots = []
         self.auto_detect_center()
         self._compute_virtual_image()
         self._update_frame()
         return self
+
+    # =====================================================================
+    # Export
+    # =====================================================================
+
+    def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Normalize frame to uint8 with current display settings."""
+        if self.dp_scale_mode == "log":
+            frame = np.log1p(np.maximum(frame, 0))
+        fmin, fmax = float(frame.min()), float(frame.max())
+        vmin = fmin + (self.dp_vmin_pct / 100) * (fmax - fmin)
+        vmax = fmin + (self.dp_vmax_pct / 100) * (fmax - fmin)
+        if vmax > vmin:
+            return np.clip((frame - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+        return np.zeros(frame.shape, dtype=np.uint8)
+
+    def _normalize_vi(self, vi: np.ndarray) -> np.ndarray:
+        """Normalize virtual image to uint8 with current VI display settings."""
+        fmin, fmax = float(vi.min()), float(vi.max())
+        vmin = fmin + (self.vi_vmin_pct / 100) * (fmax - fmin)
+        vmax = fmin + (self.vi_vmax_pct / 100) * (fmax - fmin)
+        if vmax > vmin:
+            return np.clip((vi - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
+        return np.zeros(vi.shape, dtype=np.uint8)
+
+    def save_image(
+        self,
+        path: str | pathlib.Path,
+        *,
+        view: str | None = None,
+        position: tuple[int, int] | None = None,
+        format: str | None = None,
+        dpi: int = 150,
+    ) -> pathlib.Path:
+        """Save the current visualization as PNG or PDF.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Output file path.
+        view : str, optional
+            One of: "diffraction", "virtual", "all". Defaults to "diffraction".
+        position : tuple[int, int], optional
+            Temporary scan position override as (row, col).
+        format : str, optional
+            "png" or "pdf". If omitted, inferred from file extension.
+        dpi : int, default 150
+            Output DPI metadata.
+
+        Returns
+        -------
+        pathlib.Path
+            The written file path.
+        """
+        from matplotlib import colormaps
+        from PIL import Image
+
+        export_path = pathlib.Path(path)
+        view_key = view or "diffraction"
+        if view_key not in ("diffraction", "virtual", "all"):
+            raise ValueError(f"view must be 'diffraction', 'virtual', or 'all', got {view_key!r}")
+        fmt = (format or export_path.suffix.lstrip(".").lower() or "png").lower()
+        if fmt not in ("png", "pdf"):
+            raise ValueError(f"Unsupported format: {fmt!r}. Use 'png' or 'pdf'.")
+        if dpi <= 0:
+            raise ValueError(f"dpi must be > 0, got {dpi}")
+
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+
+        prev_row, prev_col = self.pos_row, self.pos_col
+        try:
+            if position is not None:
+                self.pos_row = int(max(0, min(position[0], self.shape_rows - 1)))
+                self.pos_col = int(max(0, min(position[1], self.shape_cols - 1)))
+
+            images = []
+            if view_key in ("diffraction", "all"):
+                frame = self._get_frame(self.pos_row, self.pos_col)
+                normalized = self._normalize_frame(frame)
+                cmap_fn = colormaps.get_cmap(self.dp_colormap)
+                rgba = (cmap_fn(normalized / 255.0) * 255).astype(np.uint8)
+                images.append(Image.fromarray(rgba))
+
+            if view_key in ("virtual", "all"):
+                vi = np.frombuffer(self.virtual_image_bytes, dtype=np.float32).reshape(
+                    self.shape_rows, self.shape_cols
+                )
+                normalized = self._normalize_vi(vi)
+                cmap_fn = colormaps.get_cmap(self.vi_colormap)
+                rgba = (cmap_fn(normalized / 255.0) * 255).astype(np.uint8)
+                images.append(Image.fromarray(rgba))
+
+            if len(images) == 1:
+                image = images[0]
+            else:
+                total_w = sum(im.width for im in images)
+                max_h = max(im.height for im in images)
+                image = Image.new("RGBA", (total_w, max_h))
+                x = 0
+                for im in images:
+                    image.paste(im, (x, 0))
+                    x += im.width
+
+            if fmt == "png":
+                image.save(str(export_path), format="PNG", dpi=(dpi, dpi))
+            else:
+                image.save(str(export_path), format="PDF", resolution=dpi)
+        finally:
+            self.pos_row = prev_row
+            self.pos_col = prev_col
+
+        return export_path
 
     # =====================================================================
     # State protocol
@@ -717,13 +810,15 @@ class ShowDiffraction(anywidget.AnyWidget):
         print("\n".join(lines))
 
     def __repr__(self) -> str:
-        shape = f"({self.shape_rows}, {self.shape_cols}, {self.det_rows}, {self.det_cols})"
         k_unit = "1/Å" if self.k_calibrated else "px"
-        parts = f"ShowDiffraction(shape={shape}, pos=({self.pos_row}, {self.pos_col})"
-        if self.spots:
-            parts += f", spots={len(self.spots)}"
-        parts += ")"
-        return parts
+        shape = f"({self.shape_rows}, {self.shape_cols}, {self.det_rows}, {self.det_cols})"
+        title_info = f", title='{self.title}'" if self.title else ""
+        spots_info = f", spots={len(self.spots)}" if self.spots else ""
+        return (
+            f"ShowDiffraction(shape={shape}, "
+            f"sampling=({self.pixel_size} Å, {self.k_pixel_size} {k_unit}), "
+            f"pos=({self.pos_row}, {self.pos_col}){spots_info}{title_info})"
+        )
 
     def free(self):
         """Free GPU memory."""
