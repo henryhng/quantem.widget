@@ -973,21 +973,27 @@ class Show4D(anywidget.AnyWidget):
             self.frame_bytes = frame.tobytes()
 
     def _on_roi_change(self, change=None):
+        if getattr(self, '_updating_roi_center', False):
+            return
         if self.roi_mode == "off":
             self._update_frame()
             return
         self._compute_roi_signal()
 
     def _on_roi_center_change(self, change=None):
+        if getattr(self, '_updating_roi_center', False):
+            return
         if self.roi_mode == "off":
             return
-        if change and "new" in change:
-            row, col = change["new"]
-            self.unobserve(self._on_roi_change, names=["roi_center_row", "roi_center_col"])
-            self.roi_center_row = row
-            self.roi_center_col = col
-            self.observe(self._on_roi_change, names=["roi_center_row", "roi_center_col"])
-        self._compute_roi_signal()
+        self._updating_roi_center = True
+        try:
+            if change and "new" in change:
+                row, col = change["new"]
+                self.roi_center_row = row
+                self.roi_center_col = col
+            self._compute_roi_signal()
+        finally:
+            self._updating_roi_center = False
 
     def _on_path_index_change(self, change):
         idx = change["new"]
