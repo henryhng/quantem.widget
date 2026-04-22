@@ -1,5 +1,4 @@
 node_modules
-package-lock.json
 .venv
 dist
 .DS_Store
