@@ -536,3 +536,80 @@ def test_show4d_show_controls_default():
     data = np.random.rand(4, 4, 8, 8).astype(np.float32)
     w = Show4D(data)
     assert w.show_controls is True
+
+
+# ── vmin/vmax tests ──────────────────────────────────────────────────────────
+
+
+def test_show4d_vmin_vmax_default_none():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4D(data)
+    assert w.nav_vmin is None
+    assert w.nav_vmax is None
+    assert w.sig_vmin is None
+    assert w.sig_vmax is None
+
+
+def test_show4d_vmin_vmax_constructor():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32) * 1000
+    w = Show4D(data, nav_vmin=10, nav_vmax=500, sig_vmin=0, sig_vmax=800)
+    assert w.nav_vmin == pytest.approx(10)
+    assert w.nav_vmax == pytest.approx(500)
+    assert w.sig_vmin == pytest.approx(0)
+    assert w.sig_vmax == pytest.approx(800)
+
+
+def test_show4d_vmin_vmax_state_dict_roundtrip():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32) * 1000
+    w = Show4D(data, nav_vmin=10, nav_vmax=500, sig_vmin=0, sig_vmax=800)
+    sd = w.state_dict()
+    assert sd["nav_vmin"] == pytest.approx(10)
+    assert sd["nav_vmax"] == pytest.approx(500)
+    assert sd["sig_vmin"] == pytest.approx(0)
+    assert sd["sig_vmax"] == pytest.approx(800)
+    w2 = Show4D(data, state=sd)
+    assert w2.nav_vmin == pytest.approx(10)
+    assert w2.nav_vmax == pytest.approx(500)
+    assert w2.sig_vmin == pytest.approx(0)
+    assert w2.sig_vmax == pytest.approx(800)
+
+
+def test_show4d_vmin_vmax_none_in_state_dict():
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4D(data)
+    sd = w.state_dict()
+    assert sd["nav_vmin"] is None
+    assert sd["nav_vmax"] is None
+    assert sd["sig_vmin"] is None
+    assert sd["sig_vmax"] is None
+
+
+def test_show4d_vmin_vmax_normalize_frame():
+    data = np.zeros((2, 2, 2, 2), dtype=np.float32)
+    frame = np.array([[0, 500], [1000, 1500]], dtype=np.float32)
+    w = Show4D(data, sig_vmin=0, sig_vmax=1000)
+    result = w._normalize_frame(frame)
+    assert result[0, 0] == 0
+    assert result[1, 0] == 255
+    assert result[1, 1] == 255  # clamped
+    assert 120 <= result[0, 1] <= 135  # ~127
+
+
+def test_show4d_vmin_vmax_normalize_frame_log():
+    data = np.zeros((2, 2, 2, 2), dtype=np.float32)
+    frame = np.array([[0, 100], [1000, 10000]], dtype=np.float32)
+    w = Show4D(data, sig_vmin=0, sig_vmax=10000, log_scale=True)
+    result = w._normalize_frame(frame)
+    assert result[0, 0] == 0
+    assert result[1, 1] == 255
+
+
+def test_show4d_vmin_vmax_summary(capsys):
+    data = np.random.rand(4, 4, 8, 8).astype(np.float32)
+    w = Show4D(data, sig_vmin=0, sig_vmax=1000, nav_vmin=10, nav_vmax=500)
+    w.summary()
+    out = capsys.readouterr().out
+    assert "sig_vmin=0" in out
+    assert "sig_vmax=1000" in out
+    assert "nav_vmin=10" in out
+    assert "nav_vmax=500" in out

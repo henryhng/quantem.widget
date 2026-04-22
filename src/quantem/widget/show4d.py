@@ -76,6 +76,18 @@ class Show4D(anywidget.AnyWidget):
         Low percentile for auto-contrast clipping.
     percentile_high : float, default 99.5
         High percentile for auto-contrast clipping.
+    nav_vmin : float, optional
+        Absolute minimum intensity for navigation panel color mapping.
+        When both nav_vmin and nav_vmax are set, overrides auto-contrast
+        and slider percentiles for the navigation panel.
+    nav_vmax : float, optional
+        Absolute maximum intensity for navigation panel color mapping.
+    sig_vmin : float, optional
+        Absolute minimum intensity for signal panel color mapping.
+        When both sig_vmin and sig_vmax are set, overrides auto-contrast
+        and slider percentiles for the signal panel.
+    sig_vmax : float, optional
+        Absolute maximum intensity for signal panel color mapping.
     disabled_tools : list of str, optional
         Tool groups to lock while still showing controls. Supported:
         ``"display"``, ``"roi"``, ``"histogram"``, ``"profile"``,
@@ -141,6 +153,11 @@ class Show4D(anywidget.AnyWidget):
     hidden_tools = traitlets.List(traitlets.Unicode()).tag(sync=True)
     percentile_low = traitlets.Float(0.5).tag(sync=True)
     percentile_high = traitlets.Float(99.5).tag(sync=True)
+    # Absolute intensity bounds (per panel)
+    nav_vmin = traitlets.Float(None, allow_none=True).tag(sync=True)
+    nav_vmax = traitlets.Float(None, allow_none=True).tag(sync=True)
+    sig_vmin = traitlets.Float(None, allow_none=True).tag(sync=True)
+    sig_vmax = traitlets.Float(None, allow_none=True).tag(sync=True)
     # Scale bars
     nav_pixel_size = traitlets.Float(0.0).tag(sync=True)
     sig_pixel_size = traitlets.Float(0.0).tag(sync=True)
@@ -268,6 +285,10 @@ class Show4D(anywidget.AnyWidget):
         sig_pixel_unit="px",
         percentile_low=0.5,
         percentile_high=99.5,
+        nav_vmin=None,
+        nav_vmax=None,
+        sig_vmin=None,
+        sig_vmax=None,
         snap_enabled=False,
         snap_radius=5,
         disabled_tools=None,
@@ -353,6 +374,10 @@ class Show4D(anywidget.AnyWidget):
         self.fft_window = fft_window
         self.percentile_low = percentile_low
         self.percentile_high = percentile_high
+        self.nav_vmin = nav_vmin
+        self.nav_vmax = nav_vmax
+        self.sig_vmin = sig_vmin
+        self.sig_vmax = sig_vmax
         self.snap_enabled = snap_enabled
         self.snap_radius = snap_radius
         self.disabled_tools = self._build_disabled_tools(
@@ -554,6 +579,10 @@ class Show4D(anywidget.AnyWidget):
             "hidden_tools": self.hidden_tools,
             "percentile_low": self.percentile_low,
             "percentile_high": self.percentile_high,
+            "nav_vmin": self.nav_vmin,
+            "nav_vmax": self.nav_vmax,
+            "sig_vmin": self.sig_vmin,
+            "sig_vmax": self.sig_vmax,
             "nav_pixel_size": self.nav_pixel_size,
             "sig_pixel_size": self.sig_pixel_size,
             "nav_pixel_unit": self.nav_pixel_unit,
@@ -593,7 +622,14 @@ class Show4D(anywidget.AnyWidget):
         lines.append(f"Position: ({self.pos_row}, {self.pos_col})")
         cmap = self.cmap
         scale = "log" if self.log_scale else "linear"
-        contrast = "auto contrast" if self.auto_contrast else "manual contrast"
+        if self.sig_vmin is not None and self.sig_vmax is not None:
+            contrast = f"sig_vmin={self.sig_vmin:.4g}, sig_vmax={self.sig_vmax:.4g}"
+        elif self.auto_contrast:
+            contrast = "auto contrast"
+        else:
+            contrast = "manual contrast"
+        if self.nav_vmin is not None and self.nav_vmax is not None:
+            contrast += f" | nav_vmin={self.nav_vmin:.4g}, nav_vmax={self.nav_vmax:.4g}"
         display = f"{cmap} | {contrast} | {scale}"
         if self.show_fft:
             display += " | FFT"
@@ -755,10 +791,18 @@ class Show4D(anywidget.AnyWidget):
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
         if self.log_scale:
             frame = np.log1p(np.maximum(frame, 0))
-        fmin, fmax = float(frame.min()), float(frame.max())
-        if self.auto_contrast:
+        if self.sig_vmin is not None and self.sig_vmax is not None:
+            fmin = float(self.sig_vmin)
+            fmax = float(self.sig_vmax)
+            if self.log_scale:
+                fmin = float(np.log1p(max(fmin, 0)))
+                fmax = float(np.log1p(max(fmax, 0)))
+        elif self.auto_contrast:
             fmin = float(np.percentile(frame, self.percentile_low))
             fmax = float(np.percentile(frame, self.percentile_high))
+        else:
+            fmin = float(frame.min())
+            fmax = float(frame.max())
         if fmax > fmin:
             return np.clip((frame - fmin) / (fmax - fmin) * 255, 0, 255).astype(np.uint8)
         return np.zeros(frame.shape, dtype=np.uint8)
@@ -890,7 +934,11 @@ class Show4D(anywidget.AnyWidget):
             normalized = self._normalize_frame(frame)
         else:
             frame = self._nav_image
-            nav_min, nav_max = float(frame.min()), float(frame.max())
+            if self.nav_vmin is not None and self.nav_vmax is not None:
+                nav_min = float(self.nav_vmin)
+                nav_max = float(self.nav_vmax)
+            else:
+                nav_min, nav_max = float(frame.min()), float(frame.max())
             if nav_max > nav_min:
                 normalized = np.clip(
                     (frame - nav_min) / (nav_max - nav_min) * 255, 0, 255
