@@ -294,12 +294,14 @@ function cropROIRegion(
   if (shape === "circle" || shape === "annular") {
     const r = roi.radius;
     const rSq = r * r;
+    const rInner = shape === "annular" ? (roi.radius_inner ?? 0) : 0;
+    const rInnerSq = rInner * rInner;
     for (let dy = 0; dy < cropH; dy++) {
       for (let dx = 0; dx < cropW; dx++) {
         const imgX = x0 + dx;
         const imgY = y0 + dy;
         const distSq = (imgX - roi.col) * (imgX - roi.col) + (imgY - roi.row) * (imgY - roi.row);
-        cropped[dy * cropW + dx] = distSq <= rSq ? data[imgY * imgW + imgX] : 0;
+        cropped[dy * cropW + dx] = (distSq <= rSq && distSq >= rInnerSq) ? data[imgY * imgW + imgX] : 0;
       }
     }
   } else {
