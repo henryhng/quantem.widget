@@ -4335,4 +4335,15 @@ class Show4DSTEM(anywidget.AnyWidget):
         self.virtual_image_bytes = self._to_float32_bytes(self._fast_masked_sum(mask))
 
 
+def _subtract_plane_fit(arr: np.ndarray) -> np.ndarray:
+    n_rows, n_cols = arr.shape[:2]
+    if min(n_rows, n_cols) < 3:
+        return arr - arr.mean()
+    rows, cols = np.mgrid[:n_rows, :n_cols]
+    design = np.column_stack([rows.ravel(), cols.ravel(), np.ones(n_rows * n_cols)])
+    coeffs, _, _, _ = np.linalg.lstsq(design, arr.ravel(), rcond=None)
+    plane = (design @ coeffs).reshape(arr.shape)
+    return arr - plane
+
+
 bind_tool_runtime_api(Show4DSTEM, "Show4DSTEM")
