@@ -629,6 +629,8 @@ class Show4DSTEM(anywidget.AnyWidget):
         self._cached_bf_virtual = None
         self._cached_abf_virtual = None
         self._cached_adf_virtual = None
+        self._cached_com_row = None
+        self._cached_com_col = None
         if precompute_virtual_images and self.n_frames == 1:
             self._precompute_common_virtual_images()
 
@@ -750,6 +752,8 @@ class Show4DSTEM(anywidget.AnyWidget):
         self._cached_bf_virtual = None
         self._cached_abf_virtual = None
         self._cached_adf_virtual = None
+        self._cached_com_row = None
+        self._cached_com_col = None
         with self.hold_trait_notifications():
             self.pos_row = min(self.pos_row, self.shape_rows - 1)
             self.pos_col = min(self.pos_col, self.shape_cols - 1)
@@ -879,6 +883,8 @@ class Show4DSTEM(anywidget.AnyWidget):
         device = str(self._device) if hasattr(self, "_device") else ""
         nbytes = self._data.nbytes if hasattr(self._data, "nbytes") else 0
         self._data = None
+        self._cached_com_row = None
+        self._cached_com_col = None
         gc.collect()
         if device == "mps":
             try:
@@ -1144,6 +1150,8 @@ class Show4DSTEM(anywidget.AnyWidget):
         self._cached_bf_virtual = None
         self._cached_abf_virtual = None
         self._cached_adf_virtual = None
+        self._cached_com_row = None
+        self._cached_com_col = None
         # Recompute virtual image and displayed frame
         self._compute_virtual_image_from_roi()
         self._update_frame()
@@ -1382,6 +1390,10 @@ class Show4DSTEM(anywidget.AnyWidget):
         self.center_col = cx
         self.center_row = cy
         self.bf_radius = radius
+
+        # Invalidate COM caches (they depend on center/bf_radius)
+        self._cached_com_row = None
+        self._cached_com_col = None
 
         if update_roi:
             # Also update ROI to center
@@ -4186,6 +4198,167 @@ class Show4DSTEM(anywidget.AnyWidget):
             float(adf_arr.min()), float(adf_arr.max())
         )
 
+    def _compute_com_maps(self):
+        if hasattr(self, "_cached_com_row") and self._cached_com_row is not None:
+            return
+
+        data = self._frame_data
+
+        # Coordinate grids relative to BF center
+        q_row = torch.arange(self.det_rows, device=self._device, dtype=torch.float32) - self.center_row
+        q_col = torch.arange(self.det_cols, device=self._device, dtype=torch.float32) - self.center_col
+        q_row_2d = q_row[:, None]
+        q_col_2d = q_col[None, :]
+
+        # Mask to 2× BF radius to reduce noise from outer detector regions
+        bf_mask = (q_row_2d**2 + q_col_2d**2) <= (self.bf_radius * 2) ** 2
+
+        if data.ndim == 3:
+            data_4d = data.reshape(
+                self._scan_shape[0], self._scan_shape[1], *self._det_shape
+            )
+        else:
+            data_4d = data
+
+        masked = data_4d * bf_mask[None, None].float()
+        intensity_sum = masked.sum(dim=(-2, -1)).clamp(min=1e-10)
+
+        com_row = (masked * q_row_2d[None, None]).sum(dim=(-2, -1)) / intensity_sum
+        com_col = (masked * q_col_2d[None, None]).sum(dim=(-2, -1)) / intensity_sum
+
+        # Clean NaN/Inf from dead pixels or zero-intensity positions
+        com_row = torch.nan_to_num(com_row, nan=0.0, posinf=0.0, neginf=0.0)
+        com_col = torch.nan_to_num(com_col, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Plane-fit background subtraction (removes descan gradients)
+        # Fits ax + by + c to each COM component and subtracts
+        com_row = self._subtract_plane_fit(com_row)
+        com_col = self._subtract_plane_fit(com_col)
+
+        # Auto-rotate to minimize curl (aligns scan ↔ diffraction coordinates)
+        com_row, com_col = self._auto_rotate_com(com_row, com_col)
+
+        self._cached_com_row = com_row
+        self._cached_com_col = com_col
+
+    @staticmethod
+    def _subtract_plane_fit(arr: torch.Tensor) -> torch.Tensor:
+        n_rows, n_cols = arr.shape
+        device = arr.device
+        row_coords = torch.arange(n_rows, device=device, dtype=torch.float32) / max(n_rows - 1, 1)
+        col_coords = torch.arange(n_cols, device=device, dtype=torch.float32) / max(n_cols - 1, 1)
+        row_grid, col_grid = torch.meshgrid(row_coords, col_coords, indexing="ij")
+        # Least-squares: arr ≈ a*row + b*col + c (normal equations)
+        design = torch.stack(
+            [row_grid.ravel(), col_grid.ravel(), torch.ones(n_rows * n_cols, device=device)],
+            dim=1,
+        )
+        target = arr.ravel()
+        gram = design.T @ design
+        moment = design.T @ target
+        coeffs = torch.linalg.solve(gram, moment)
+        plane = coeffs[0] * row_grid + coeffs[1] * col_grid + coeffs[2]
+        return arr - plane
+
+    @staticmethod
+    def _auto_rotate_com(com_row: torch.Tensor, com_col: torch.Tensor):
+        com_row_np = com_row.cpu().numpy()
+        com_col_np = com_col.cpu().numpy()
+        best_angle = 0.0
+        best_curl = np.inf
+        # Search rotation that minimizes mean |curl|
+        for angle_deg in range(-90, 91, 5):
+            rad = np.radians(angle_deg)
+            cos_a, sin_a = np.cos(rad), np.sin(rad)
+            rot_row = cos_a * com_row_np - sin_a * com_col_np
+            rot_col = sin_a * com_row_np + cos_a * com_col_np
+            curl = np.gradient(rot_col, axis=0) - np.gradient(rot_row, axis=1)
+            curl_metric = np.abs(curl).mean()
+            if curl_metric < best_curl:
+                best_curl = curl_metric
+                best_angle = angle_deg
+        # Refine around best angle (±5° in 1° steps)
+        for angle_deg in range(best_angle - 5, best_angle + 6):
+            rad = np.radians(angle_deg)
+            cos_a, sin_a = np.cos(rad), np.sin(rad)
+            rot_row = cos_a * com_row_np - sin_a * com_col_np
+            rot_col = sin_a * com_row_np + cos_a * com_col_np
+            curl = np.gradient(rot_col, axis=0) - np.gradient(rot_row, axis=1)
+            curl_metric = np.abs(curl).mean()
+            if curl_metric < best_curl:
+                best_curl = curl_metric
+                best_angle = angle_deg
+        # Apply best rotation
+        if best_angle != 0:
+            rad = np.radians(best_angle)
+            cos_a, sin_a = np.cos(rad), np.sin(rad)
+            rot_row = cos_a * com_row_np - sin_a * com_col_np
+            rot_col = sin_a * com_row_np + cos_a * com_col_np
+            return (
+                torch.from_numpy(rot_row.astype(np.float32)).to(com_row.device),
+                torch.from_numpy(rot_col.astype(np.float32)).to(com_col.device),
+            )
+        return com_row, com_col
+
+    def _get_com_derived(self, mode: str) -> torch.Tensor:
+        self._compute_com_maps()
+        cached_row = self._cached_com_row
+        cached_col = self._cached_com_col
+
+        if mode == "com_x":
+            return cached_col
+        elif mode == "com_y":
+            return cached_row
+        elif mode == "com_mag":
+            return (cached_row**2 + cached_col**2).sqrt()
+        elif mode == "icom":
+            return self._compute_icom(cached_row, cached_col)
+        elif mode == "dcom":
+            com_row_np = cached_row.cpu().numpy()
+            com_col_np = cached_col.cpu().numpy()
+            divergence = np.gradient(com_col_np, axis=1) + np.gradient(com_row_np, axis=0)
+            return torch.from_numpy(divergence.astype(np.float32)).to(self._device)
+        elif mode == "curl":
+            com_row_np = cached_row.cpu().numpy()
+            com_col_np = cached_col.cpu().numpy()
+            curl = np.gradient(com_col_np, axis=0) - np.gradient(com_row_np, axis=1)
+            return torch.from_numpy(curl.astype(np.float32)).to(self._device)
+        else:
+            raise ValueError(f"Unknown COM mode: {mode!r}")
+
+    def _compute_icom(self, com_row, com_col):
+        com_row_np = com_row.cpu().numpy().astype(np.float64)
+        com_col_np = com_col.cpu().numpy().astype(np.float64)
+        n_rows, n_cols = com_row_np.shape
+
+        # Apply Hann window to taper edges — eliminates boundary discontinuity
+        window = np.hanning(n_rows)[:, None] * np.hanning(n_cols)[None, :]
+        com_row_np = com_row_np * window
+        com_col_np = com_col_np * window
+
+        # Zero-pad to 2x size to reduce periodic boundary artifacts
+        pad_rows, pad_cols = n_rows * 2, n_cols * 2
+        row_pad = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+        col_pad = np.zeros((pad_rows, pad_cols), dtype=np.float64)
+        row_pad[:n_rows, :n_cols] = com_row_np
+        col_pad[:n_rows, :n_cols] = com_col_np
+
+        freq_row = np.fft.fftfreq(pad_rows)
+        freq_col = np.fft.fftfreq(pad_cols)
+        freq_row_2d, freq_col_2d = np.meshgrid(freq_row, freq_col, indexing="ij")
+        freq_sq = freq_row_2d**2 + freq_col_2d**2
+        freq_sq[0, 0] = 1.0  # avoid division by zero at DC
+
+        fft_row = np.fft.fft2(row_pad)
+        fft_col = np.fft.fft2(col_pad)
+
+        # Fourier-space Poisson integration: V = -F^{-1}[(i*kr*Fr + i*kc*Fc) / k^2]
+        fft_potential = -(1j * freq_row_2d * fft_row + 1j * freq_col_2d * fft_col) / freq_sq
+        fft_potential[0, 0] = 0.0
+
+        potential = np.real(np.fft.ifft2(fft_potential))[:n_rows, :n_cols].astype(np.float32)
+        return torch.from_numpy(potential).to(self._device)
+
     def _get_cached_preset(self) -> tuple[bytes, list[float], float, float] | None:
         """Check if current ROI matches a cached preset and return (bytes, stats, min, max) tuple."""
         # Must be centered on detector center
@@ -4214,6 +4387,23 @@ class Show4DSTEM(anywidget.AnyWidget):
 
     def _virtual_image_for_frame(self, frame_idx: int) -> np.ndarray:
         """Compute virtual image array for a specific frame without mutating traits."""
+        # COM/DPC modes: return the cached/computed map for this frame
+        if self.roi_mode in ("com_x", "com_y", "com_mag", "icom", "dcom", "curl"):
+            # For per-frame export, temporarily switch frame context if needed
+            orig_frame_idx = self.frame_idx
+            if self.n_frames > 1 and frame_idx != self.frame_idx:
+                # Invalidate COM cache and switch frame
+                self._cached_com_row = None
+                self._cached_com_col = None
+                self.frame_idx = frame_idx
+            arr = self._get_com_derived(self.roi_mode)
+            arr_np = arr.cpu().numpy() if hasattr(arr, "cpu") else arr
+            if self.n_frames > 1 and frame_idx != orig_frame_idx:
+                self._cached_com_row = None
+                self._cached_com_col = None
+                self.frame_idx = orig_frame_idx
+            return arr_np.astype(np.float32, copy=False)
+
         data = self._data[frame_idx] if self.n_frames > 1 else self._data
         cx, cy = self.roi_center_col, self.roi_center_row
         if self.roi_mode == "circle" and self.roi_radius > 0:
@@ -4308,6 +4498,22 @@ class Show4DSTEM(anywidget.AnyWidget):
             self.vi_stats = vi_stats
             self.vi_data_min = vi_min
             self.vi_data_max = vi_max
+            return
+
+        # COM/DPC modes: compute scalar maps from center-of-mass displacements
+        if self.roi_mode in ("com_x", "com_y", "com_mag", "icom", "dcom", "curl"):
+            arr = self._get_com_derived(self.roi_mode)
+            arr_np = arr.cpu().numpy() if hasattr(arr, "cpu") else arr
+            vi_arr = arr_np.astype(np.float32)
+            self.vi_stats = [
+                float(vi_arr.mean()),
+                float(vi_arr.min()),
+                float(vi_arr.max()),
+                float(vi_arr.std()),
+            ]
+            self.vi_data_min = float(vi_arr.min())
+            self.vi_data_max = float(vi_arr.max())
+            self.virtual_image_bytes = vi_arr.tobytes()
             return
 
         cx, cy = self.roi_center_col, self.roi_center_row

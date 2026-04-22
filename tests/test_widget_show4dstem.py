@@ -1115,6 +1115,111 @@ def test_show4dstem_virtual_image_for_frame():
     assert w.frame_idx == original_frame_idx
 
 
+# ── COM/DPC Virtual Imaging ────────────────────────────────────────
+
+
+def _make_shifted_4dstem(scan_rows=8, scan_cols=8, det_rows=32, det_cols=32):
+    """4D-STEM with BF disk position varying linearly across scan."""
+    data = np.zeros((scan_rows, scan_cols, det_rows, det_cols), dtype=np.float32)
+    cr, cc = det_rows // 2, det_cols // 2
+    rr, ccc = np.mgrid[:det_rows, :det_cols]
+    for i in range(scan_rows):
+        shift = 2.0 * (i / max(scan_rows - 1, 1))
+        disk = ((rr - cr) ** 2 + (ccc - (cc + shift)) ** 2 < 4**2).astype(np.float32)
+        data[i, :] = disk[None]
+    return data
+
+
+def test_show4dstem_com_modes():
+    """COM modes produce valid virtual images."""
+    data = _make_shifted_4dstem()
+    w = Show4DSTEM(data, verbose=False)
+    for mode in ["com_x", "com_y", "com_mag", "icom", "dcom", "curl"]:
+        w.roi_mode = mode
+        assert len(w.virtual_image_bytes) > 0, f"{mode} produced empty VI"
+        vi = np.frombuffer(w.virtual_image_bytes, dtype=np.float32)
+        assert vi.size == 8 * 8, f"{mode} wrong size"
+
+
+def test_show4dstem_com_magnitude_nonnegative():
+    """COM magnitude is always >= 0."""
+    data = _make_shifted_4dstem()
+    w = Show4DSTEM(data, verbose=False)
+    w.roi_mode = "com_mag"
+    vi = np.frombuffer(w.virtual_image_bytes, dtype=np.float32)
+    assert vi.min() >= 0
+
+
+def test_show4dstem_com_nonzero_for_shifted():
+    """COM magnitude should be nonzero when BF disk shifts across scan."""
+    # Use quadratic shift so plane-fit subtraction doesn't remove all signal
+    scan_rows, scan_cols, det_rows, det_cols = 16, 16, 32, 32
+    data = np.zeros((scan_rows, scan_cols, det_rows, det_cols), dtype=np.float32)
+    cr, cc = det_rows // 2, det_cols // 2
+    rr, ccc = np.mgrid[:det_rows, :det_cols]
+    for i in range(scan_rows):
+        for j in range(scan_cols):
+            # Quadratic shift: survives plane-fit background subtraction
+            sr = 2.0 * ((i / (scan_rows - 1)) - 0.5) ** 2
+            sc = 1.5 * ((j / (scan_cols - 1)) - 0.5) ** 2
+            disk = ((rr - (cr + sr)) ** 2 + (ccc - (cc + sc)) ** 2 < 4**2).astype(np.float32)
+            data[i, j] = disk
+    w = Show4DSTEM(data, verbose=False)
+    w.roi_mode = "com_mag"
+    vi = np.frombuffer(w.virtual_image_bytes, dtype=np.float32)
+    assert np.abs(vi).max() > 0.001
+
+
+def test_show4dstem_icom_recovers_structure():
+    """iCOM should produce a smooth potential map from 2D COM field."""
+    # Need shifts in both row AND col for the Fourier Poisson solver to work
+    scan_rows, scan_cols, det_rows, det_cols = 16, 16, 32, 32
+    data = np.zeros((scan_rows, scan_cols, det_rows, det_cols), dtype=np.float32)
+    cr, cc = det_rows // 2, det_cols // 2
+    rr, ccc = np.mgrid[:det_rows, :det_cols]
+    for i in range(scan_rows):
+        for j in range(scan_cols):
+            sr = 1.5 * (i / max(scan_rows - 1, 1))
+            sc = 1.0 * (j / max(scan_cols - 1, 1))
+            disk = ((rr - (cr + sr)) ** 2 + (ccc - (cc + sc)) ** 2 < 4**2).astype(np.float32)
+            data[i, j] = disk
+    w = Show4DSTEM(data, verbose=False)
+    w.roi_mode = "icom"
+    vi = np.frombuffer(w.virtual_image_bytes, dtype=np.float32).reshape(scan_rows, scan_cols)
+    assert vi.std() > 0, "iCOM should have spatial variation"
+
+
+def test_show4dstem_com_state_roundtrip():
+    """COM mode survives state_dict roundtrip."""
+    data = _make_shifted_4dstem()
+    w = Show4DSTEM(data, verbose=False)
+    w.roi_mode = "com_mag"
+    sd = w.state_dict()
+    assert sd["roi_mode"] == "com_mag"
+
+
+def test_show4dstem_com_cache_invalidation():
+    """COM cache is populated on first use and cleared by auto_detect_center."""
+    data = _make_shifted_4dstem()
+    w = Show4DSTEM(data, verbose=False)
+    # Initially no COM cache
+    assert w._cached_com_row is None
+    # Trigger COM computation
+    w.roi_mode = "com_x"
+    assert len(w.virtual_image_bytes) > 0
+    # Cache should now be populated
+    assert w._cached_com_row is not None
+    assert w._cached_com_col is not None
+    # auto_detect_center clears the cache
+    w.auto_detect_center()
+    assert w._cached_com_row is None
+    assert w._cached_com_col is None
+    # Re-trigger COM: should recompute (not use stale cache)
+    w.roi_mode = "point"
+    w.roi_mode = "com_x"
+    assert w._cached_com_row is not None
+
+
 # ── dp_vmin/dp_vmax + vi_vmin/vi_vmax tests ─────────────────────────────────
 
 

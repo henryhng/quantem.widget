@@ -1102,6 +1102,7 @@ function Show4DSTEM() {
   const lockFrame = toolVisibility.isLocked("frame");
   const lockFft = toolVisibility.isLocked("fft") || lockVirtual;
   const effectiveShowFft = showFft && !hideFft;
+  const isComMode = roiMode?.startsWith("com_") || roiMode === "icom" || roiMode === "dcom" || roiMode === "curl";
 
   // ROI FFT state (VI ROI crops virtual image for FFT)
   const [fftCropDims, setFftCropDims] = React.useState<{ cropWidth: number; cropHeight: number; fftWidth: number; fftHeight: number } | null>(null);
@@ -3785,6 +3786,8 @@ function Show4DSTEM() {
                   <Typography component="span" onClick={() => { if (!lockRoi) { setRoiMode("circle"); setRoiRadius(bfRadius || 10); setRoiCenterCol(centerCol); setRoiCenterRow(centerRow); } }} sx={{ color: roiColors.textColor, fontSize: 11, fontWeight: "bold", cursor: lockRoi ? "default" : "pointer", opacity: lockRoi ? 0.6 : 1, "&:hover": { textDecoration: lockRoi ? "none" : "underline" } }}>BF</Typography>
                   <Typography component="span" onClick={() => { if (!lockRoi) { setRoiMode("annular"); setRoiRadiusInner((bfRadius || 10) * 0.5); setRoiRadius(bfRadius || 10); setRoiCenterCol(centerCol); setRoiCenterRow(centerRow); } }} sx={{ color: "#4af", fontSize: 11, fontWeight: "bold", cursor: lockRoi ? "default" : "pointer", opacity: lockRoi ? 0.6 : 1, "&:hover": { textDecoration: lockRoi ? "none" : "underline" } }}>ABF</Typography>
                   <Typography component="span" onClick={() => { if (!lockRoi) { setRoiMode("annular"); setRoiRadiusInner(bfRadius || 10); setRoiRadius(Math.min((bfRadius || 10) * 3, Math.min(detRows, detCols) / 2 - 2)); setRoiCenterCol(centerCol); setRoiCenterRow(centerRow); } }} sx={{ color: "#fa4", fontSize: 11, fontWeight: "bold", cursor: lockRoi ? "default" : "pointer", opacity: lockRoi ? 0.6 : 1, "&:hover": { textDecoration: lockRoi ? "none" : "underline" } }}>ADF</Typography>
+                  <Typography component="span" onClick={() => { if (!lockRoi) { setRoiMode("com_mag"); } }} sx={{ color: "#f6a", fontSize: 11, fontWeight: "bold", cursor: lockRoi ? "default" : "pointer", opacity: lockRoi ? 0.6 : 1, "&:hover": { textDecoration: lockRoi ? "none" : "underline" } }}>COM</Typography>
+                  <Typography component="span" onClick={() => { if (!lockRoi) { setRoiMode("icom"); } }} sx={{ color: "#a6f", fontSize: 11, fontWeight: "bold", cursor: lockRoi ? "default" : "pointer", opacity: lockRoi ? 0.6 : 1, "&:hover": { textDecoration: lockRoi ? "none" : "underline" } }}>iCOM</Typography>
                 </>
               )}
             </Box>
@@ -3825,8 +3828,14 @@ function Show4DSTEM() {
                       <MenuItem value="square">Square</MenuItem>
                       <MenuItem value="rect">Rect</MenuItem>
                       <MenuItem value="annular">Annular</MenuItem>
+                      <MenuItem value="com_x">COM-X</MenuItem>
+                      <MenuItem value="com_y">COM-Y</MenuItem>
+                      <MenuItem value="com_mag">COM Mag</MenuItem>
+                      <MenuItem value="icom">iCOM</MenuItem>
+                      <MenuItem value="dcom">dCOM</MenuItem>
+                      <MenuItem value="curl">Curl</MenuItem>
                     </Select>
-                    {(roiMode === "circle" || roiMode === "square" || roiMode === "annular") && (
+                    {!isComMode && (roiMode === "circle" || roiMode === "square" || roiMode === "annular") && (
                       <>
                         <Slider
                           value={roiMode === "annular" ? [roiRadiusInner, roiRadius] : [roiRadius]}
