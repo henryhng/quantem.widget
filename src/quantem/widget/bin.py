@@ -1764,8 +1764,8 @@ class Bin4D(anywidget.AnyWidget):
 
         self.binned_pixel_size_row = float(self.pixel_size_row * self.scan_bin_row)
         self.binned_pixel_size_col = float(self.pixel_size_col * self.scan_bin_col)
-        self.binned_k_pixel_size_row = float(self.k_pixel_size_row * self.det_bin_row)
-        self.binned_k_pixel_size_col = float(self.k_pixel_size_col * self.det_bin_col)
+        self.binned_k_pixel_size_row = float(self.k_pixel_size_row / self.det_bin_row)
+        self.binned_k_pixel_size_col = float(self.k_pixel_size_col / self.det_bin_col)
 
         # Detector center maps with detector bin factors (clamped to bounds)
         self.binned_center_row = float(
