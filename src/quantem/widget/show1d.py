@@ -783,10 +783,13 @@ class Show1D(anywidget.AnyWidget):
         if self.log_scale:
             ax.set_yscale("log")
 
-        if self.auto_contrast and not self.log_scale:
+        if self.auto_contrast:
             all_vals = self._data.ravel()
             vmin = float(np.percentile(all_vals, self.percentile_low))
             vmax = float(np.percentile(all_vals, self.percentile_high))
+            if self.log_scale:
+                vmin = max(vmin, 1e-30)
+                vmax = max(vmax, 1e-30)
             if vmin < vmax:
                 pad = (vmax - vmin) * 0.05
                 ax.set_ylim(vmin - pad, vmax + pad)
