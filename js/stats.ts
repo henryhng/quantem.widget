@@ -41,9 +41,11 @@ export function percentileClip(
   let min = Infinity, max = -Infinity;
   for (let i = 0; i < len; i++) {
     const v = data[i];
+    if (!isFinite(v)) continue;
     if (v < min) min = v;
     if (v > max) max = v;
   }
+  if (min === Infinity) return { vmin: 0, vmax: 0, min: 0, max: 0 };
   if (min === max) return { vmin: min, vmax: max, min, max };
 
   // Pass 2: build histogram
@@ -75,17 +77,24 @@ export function percentileClip(
 /** Compute mean, min, max, and standard deviation of a Float32Array. */
 export function computeStats(data: Float32Array): { mean: number; min: number; max: number; std: number } {
   if (data.length === 0) return { mean: 0, min: 0, max: 0, std: 0 };
-  let sum = 0, min = Infinity, max = -Infinity;
+  let sum = 0, min = Infinity, max = -Infinity, finiteCount = 0;
   for (let i = 0; i < data.length; i++) {
     const v = data[i];
+    if (!isFinite(v)) continue;
     sum += v;
+    finiteCount++;
     if (v < min) min = v;
     if (v > max) max = v;
   }
-  const mean = sum / data.length;
+  if (finiteCount === 0) return { mean: 0, min: 0, max: 0, std: 0 };
+  const mean = sum / finiteCount;
   let variance = 0;
-  for (let i = 0; i < data.length; i++) variance += (data[i] - mean) ** 2;
-  const std = Math.sqrt(variance / data.length);
+  for (let i = 0; i < data.length; i++) {
+    const v = data[i];
+    if (!isFinite(v)) continue;
+    variance += (v - mean) ** 2;
+  }
+  const std = Math.sqrt(variance / finiteCount);
   return { mean, min, max, std };
 }
 
