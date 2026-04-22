@@ -190,6 +190,7 @@ export class GPUColormapEngine {
   private device: GPUDevice;
   private pipeline: GPUComputePipeline | null = null;
   private blitPipeline: GPURenderPipeline | null = null;
+  private blitParamsBuffer: GPUBuffer | null = null;
   // Per-image GPU state: persistent buffers (data, rgba, read, params, histogram)
   private slots: {
     dataBuffer: GPUBuffer;
@@ -528,16 +529,19 @@ export class GPUColormapEngine {
       computePass.end();
 
       // 2. Blit RGBA buffer → canvas texture (zero-copy render pass)
-      const blitParamsBuffer = this.device.createBuffer({
-        size: 8,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this.device.queue.writeBuffer(blitParamsBuffer, 0, new Uint32Array([slot.width, slot.height]));
+      // Reuse a single persistent blitParamsBuffer across all slots
+      if (!this.blitParamsBuffer) {
+        this.blitParamsBuffer = this.device.createBuffer({
+          size: 8,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      this.device.queue.writeBuffer(this.blitParamsBuffer, 0, new Uint32Array([slot.width, slot.height]));
 
       const blitGroup = this.device.createBindGroup({
         layout: this.blitPipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: blitParamsBuffer } },
+          { binding: 0, resource: { buffer: this.blitParamsBuffer } },
           { binding: 1, resource: { buffer: slot.rgbaBuffer } },
         ],
       });
@@ -556,9 +560,6 @@ export class GPUColormapEngine {
       renderPass.draw(3); // fullscreen triangle
       renderPass.end();
       rendered++;
-
-      // Note: blitParamsBuffer is a temporary — ideally per-slot persistent
-      // For now, acceptable overhead (8 bytes per image)
     }
 
     this.device.queue.submit([encoder.finish()]);
@@ -620,15 +621,18 @@ export class GPUColormapEngine {
       const ctx = oc.getContext("webgpu") as GPUCanvasContext;
       ctx.configure({ device: this.device, format: fmt, alphaMode: "opaque" });
 
-      const blitParamsBuffer = this.device.createBuffer({
-        size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this.device.queue.writeBuffer(blitParamsBuffer, 0, new Uint32Array([slot.width, slot.height]));
+      // Reuse persistent blitParamsBuffer
+      if (!this.blitParamsBuffer) {
+        this.blitParamsBuffer = this.device.createBuffer({
+          size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+      }
+      this.device.queue.writeBuffer(this.blitParamsBuffer, 0, new Uint32Array([slot.width, slot.height]));
 
       const blitGroup = this.device.createBindGroup({
         layout: this.blitPipeline!.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: blitParamsBuffer } },
+          { binding: 0, resource: { buffer: this.blitParamsBuffer } },
           { binding: 1, resource: { buffer: slot.rgbaBuffer } },
         ],
       });
@@ -699,6 +703,8 @@ export class GPUColormapEngine {
     this.slots = [];
     this.lutBuffer?.destroy();
     this.lutBuffer = null;
+    this.blitParamsBuffer?.destroy();
+    this.blitParamsBuffer = null;
     this.currentLutName = "";
   }
 
