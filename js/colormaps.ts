@@ -70,7 +70,7 @@ export function applyColormap(
   const uniformData = !(vmax > vmin);
   for (let i = 0; i < data.length; i++) {
     const clipped = Math.max(vmin, Math.min(vmax, data[i]));
-    const v = uniformData ? 128 : Math.min(255, Math.floor(((clipped - vmin) / range) * 255));
+    const v = uniformData ? 0 : Math.min(255, Math.floor(((clipped - vmin) / range) * 255));
     const j = i * 4;
     const lutIdx = v * 3;
     rgba[j] = lut[lutIdx];
