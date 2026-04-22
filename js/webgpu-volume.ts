@@ -289,7 +289,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
       let slicePos = rayOrigin + tSliceXY * rayDir;
       let sliceTex = worldToTex(slicePos, bmin, bmax);
       var sliceValXY = textureSampleLevel(volume, volumeSampler, sliceTex, 0.0).r;
-      sliceValXY = clamp((sliceValXY - u.vmin) / (u.vmax - u.vmin), 0.0, 1.0);
+      sliceValXY = clamp((sliceValXY - u.vmin) / max(u.vmax - u.vmin, 1e-30), 0.0, 1.0);
       var sliceCol = textureSampleLevel(colormap, colormapSampler, vec2<f32>(clamp(sliceValXY * u.brightness, 0.0, 1.0), 0.5), 0.0).rgb;
       sliceCol = mix(sliceCol, vec3<f32>(0.3, 0.5, 1.0), 0.25);
       let sliceAlpha = u.slicePlaneOpacity * (1.0 - accum.a);
@@ -301,7 +301,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
       let slicePos = rayOrigin + tSliceXZ * rayDir;
       let sliceTex = worldToTex(slicePos, bmin, bmax);
       var sliceValXZ = textureSampleLevel(volume, volumeSampler, sliceTex, 0.0).r;
-      sliceValXZ = clamp((sliceValXZ - u.vmin) / (u.vmax - u.vmin), 0.0, 1.0);
+      sliceValXZ = clamp((sliceValXZ - u.vmin) / max(u.vmax - u.vmin, 1e-30), 0.0, 1.0);
       var sliceCol = textureSampleLevel(colormap, colormapSampler, vec2<f32>(clamp(sliceValXZ * u.brightness, 0.0, 1.0), 0.5), 0.0).rgb;
       sliceCol = mix(sliceCol, vec3<f32>(0.3, 1.0, 0.4), 0.25);
       let sliceAlpha = u.slicePlaneOpacity * (1.0 - accum.a);
@@ -313,7 +313,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
       let slicePos = rayOrigin + tSliceYZ * rayDir;
       let sliceTex = worldToTex(slicePos, bmin, bmax);
       var sliceValYZ = textureSampleLevel(volume, volumeSampler, sliceTex, 0.0).r;
-      sliceValYZ = clamp((sliceValYZ - u.vmin) / (u.vmax - u.vmin), 0.0, 1.0);
+      sliceValYZ = clamp((sliceValYZ - u.vmin) / max(u.vmax - u.vmin, 1e-30), 0.0, 1.0);
       var sliceCol = textureSampleLevel(colormap, colormapSampler, vec2<f32>(clamp(sliceValYZ * u.brightness, 0.0, 1.0), 0.5), 0.0).rgb;
       sliceCol = mix(sliceCol, vec3<f32>(1.0, 0.3, 0.3), 0.25);
       let sliceAlpha = u.slicePlaneOpacity * (1.0 - accum.a);
@@ -323,7 +323,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     // Sample volume — remap from [vmin, vmax] to [0, 1]
     var intensity = textureSampleLevel(volume, volumeSampler, texCoord, 0.0).r;
-    intensity = clamp((intensity - u.vmin) / (u.vmax - u.vmin), 0.0, 1.0);
+    intensity = clamp((intensity - u.vmin) / max(u.vmax - u.vmin, 1e-30), 0.0, 1.0);
     intensity = clamp(intensity * u.brightness, 0.0, 1.0);
 
     // Colormap lookup
