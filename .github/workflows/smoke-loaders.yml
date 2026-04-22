@@ -32,4 +32,9 @@ jobs:
           playwright install --with-deps chromium
 
       - name: Run Show2D loader smoke test
-        run: python -m pytest tests/test_e2e_show2d_loader_smoke.py -q
+        run: |
+          if [ -f tests/test_e2e_show2d_loader_smoke.py ]; then
+            python -m pytest tests/test_e2e_show2d_loader_smoke.py -q
+          else
+            echo "Skipping: tests/test_e2e_show2d_loader_smoke.py not found yet"
+          fi

@@ -1382,10 +1382,12 @@ class Bin4D(anywidget.AnyWidget):
         fmt = self._resolve_export_format(output_path, format)
 
         image, render_meta = self._render_view_image(view=view, cmap=cmap, scale_mode=scale_mode)
-        if fmt == "png":
-            image.save(output_path, format="PNG", dpi=(dpi, dpi))
-        else:
+        if fmt == "pdf":
+            Image.init()
+            image = image.convert("RGB")
             image.save(output_path, format="PDF", resolution=dpi)
+        else:
+            image.save(output_path, format="PNG", dpi=(dpi, dpi))
 
         if include_metadata:
             meta_path = (

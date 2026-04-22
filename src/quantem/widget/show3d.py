@@ -1732,6 +1732,9 @@ class Show3D(anywidget.AnyWidget):
         rgba = (cmap_fn(normalized / 255.0) * 255).astype(np.uint8)
 
         img = Image.fromarray(rgba)
+        if fmt == "pdf":
+            Image.init()
+            img = img.convert("RGB")
         path.parent.mkdir(parents=True, exist_ok=True)
         img.save(str(path), dpi=(dpi, dpi))
         return path

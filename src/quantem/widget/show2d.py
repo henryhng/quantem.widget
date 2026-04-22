@@ -805,6 +805,9 @@ class Show2D(anywidget.AnyWidget):
         if not use_figure:
             rgba = (cmap_fn(normalized / 255.0) * 255).astype(np.uint8)
             img = Image.fromarray(rgba)
+            if fmt == "pdf":
+                Image.init()
+                img = img.convert("RGB")
             img.save(str(path), dpi=(dpi, dpi))
             return path
 

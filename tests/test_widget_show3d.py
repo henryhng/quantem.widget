@@ -102,11 +102,11 @@ def test_show3d_colormap():
     widget = Show3D(data, cmap="viridis")
     assert widget.cmap == "viridis"
 
-def test_show3d_rejects_2d():
-    """Raises error for 2D input."""
+def test_show3d_accepts_2d():
+    """2D input is auto-promoted to single-frame stack."""
     data = np.random.rand(16, 16).astype(np.float32)
-    with pytest.raises(ValueError, match="3D"):
-        Show3D(data)
+    w = Show3D(data)
+    assert w.n_slices == 1
 
 def test_show3d_timestamps():
     """Timestamps are stored."""

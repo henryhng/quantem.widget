@@ -724,10 +724,12 @@ class ShowDiffraction(anywidget.AnyWidget):
                     image.paste(im, (x, 0))
                     x += im.width
 
-            if fmt == "png":
-                image.save(str(export_path), format="PNG", dpi=(dpi, dpi))
-            else:
+            if fmt == "pdf":
+                Image.init()
+                image = image.convert("RGB")
                 image.save(str(export_path), format="PDF", resolution=dpi)
+            else:
+                image.save(str(export_path), format="PNG", dpi=(dpi, dpi))
         finally:
             self.pos_row = prev_row
             self.pos_col = prev_col

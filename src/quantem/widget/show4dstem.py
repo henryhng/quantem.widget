@@ -3014,10 +3014,12 @@ class Show4DSTEM(anywidget.AnyWidget):
                     render_meta["fft"] = fft_meta
                 image = self._compose_horizontal(panel_images)
 
-            if fmt == "png":
-                image.save(export_path, format="PNG", dpi=(dpi_value, dpi_value))
-            else:
+            if fmt == "pdf":
+                Image.init()
+                image = image.convert("RGB")
                 image.save(export_path, format="PDF", resolution=dpi_value)
+            else:
+                image.save(export_path, format="PNG", dpi=(dpi_value, dpi_value))
 
             if include_metadata:
                 meta_path = (
@@ -3407,10 +3409,12 @@ class Show4DSTEM(anywidget.AnyWidget):
 
                 x0 += panel.width + gap
 
-            if fmt == "png":
-                figure.save(export_path, format="PNG", dpi=(dpi_value, dpi_value))
-            else:
+            if fmt == "pdf":
+                Image.init()
+                figure = figure.convert("RGB")
                 figure.save(export_path, format="PDF", resolution=dpi_value)
+            else:
+                figure.save(export_path, format="PNG", dpi=(dpi_value, dpi_value))
 
             if include_metadata:
                 meta_path = (
