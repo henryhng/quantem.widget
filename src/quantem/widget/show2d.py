@@ -669,6 +669,9 @@ class Show2D(anywidget.AnyWidget):
         else:
             self.labels = [f"Image {i+1}" for i in range(self.n_images)]
         self.selected_idx = 0
+        self.roi_list = []
+        self.roi_selected_idx = -1
+        self.profile_line = []
         self._compute_all_stats()
         self._update_all_frames()
 
