@@ -198,8 +198,8 @@ function drawPhaseColorwheel(
   for (let angle = 0; angle < 360; angle += 1) {
     const rad = (angle * Math.PI) / 180;
     const rad2 = ((angle + 2) * Math.PI) / 180;
-    // phase = angle mapped to [-pi, pi] → hue
-    const h = angle / 360;
+    // match renderHSV: phase=0 → h=0.5, so offset by 0.5
+    const h = ((angle / 360) + 0.5) % 1;
     const hi = Math.floor(h * 6) % 6;
     const f = h * 6 - Math.floor(h * 6);
     const q = 1 - f;
