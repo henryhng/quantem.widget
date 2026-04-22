@@ -31,8 +31,8 @@ def test_bin_widget_updates_shape_and_calibration():
 
     assert widget.binned_pixel_size_row == 1.5
     assert widget.binned_pixel_size_col == 0.5
-    assert widget.binned_k_pixel_size_row == 4.0
-    assert widget.binned_k_pixel_size_col == 6.0
+    assert widget.binned_k_pixel_size_row == 1.0 / 4
+    assert widget.binned_k_pixel_size_col == 2.0 / 3
 
 def test_bin_widget_crop_vs_pad_behavior():
     data = np.ones((9, 9, 9, 9), dtype=np.float32)
