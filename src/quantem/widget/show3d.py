@@ -1028,14 +1028,21 @@ class Show3D(anywidget.AnyWidget):
             self.data_min = float(data.min())
             self.data_max = float(data.max())
         elif self.diff_mode == "previous":
-            # Vectorized diff: data[1:] - data[:-1]
-            diffs = data[1:] - data[:-1]
-            self.data_min = min(0.0, float(diffs.min()))
-            self.data_max = float(diffs.max())
+            if self.n_slices <= 1:
+                self.data_min = 0.0
+                self.data_max = 0.0
+            else:
+                diffs = data[1:] - data[:-1]
+                self.data_min = min(0.0, float(diffs.min()))
+                self.data_max = float(diffs.max())
         elif self.diff_mode == "first":
-            diffs = data[1:] - data[0:1]
-            self.data_min = min(0.0, float(diffs.min()))
-            self.data_max = float(diffs.max())
+            if self.n_slices <= 1:
+                self.data_min = 0.0
+                self.data_max = 0.0
+            else:
+                diffs = data[1:] - data[0:1]
+                self.data_min = min(0.0, float(diffs.min()))
+                self.data_max = float(diffs.max())
         else:
             self.data_min = float(data.min())
             self.data_max = float(data.max())
