@@ -4331,28 +4331,22 @@ class Show4DSTEM(anywidget.AnyWidget):
         com_col_np = com_col.cpu().numpy().astype(np.float64)
         n_rows, n_cols = com_row_np.shape
 
-        # Apply Hann window to taper edges — eliminates boundary discontinuity
-        window = np.hanning(n_rows)[:, None] * np.hanning(n_cols)[None, :]
-        com_row_np = com_row_np * window
-        com_col_np = com_col_np * window
+        # Mirror-pad to make boundaries continuous (avoids Hann window dome artifact)
+        pad_row = np.concatenate([com_row_np, com_row_np[::-1]], axis=0)
+        pad_row = np.concatenate([pad_row, pad_row[:, ::-1]], axis=1)
+        pad_col = np.concatenate([com_col_np, com_col_np[::-1]], axis=0)
+        pad_col = np.concatenate([pad_col, pad_col[:, ::-1]], axis=1)
 
-        # Zero-pad to 2x size to reduce periodic boundary artifacts
-        pad_rows, pad_cols = n_rows * 2, n_cols * 2
-        row_pad = np.zeros((pad_rows, pad_cols), dtype=np.float64)
-        col_pad = np.zeros((pad_rows, pad_cols), dtype=np.float64)
-        row_pad[:n_rows, :n_cols] = com_row_np
-        col_pad[:n_rows, :n_cols] = com_col_np
-
+        pad_rows, pad_cols = pad_row.shape
         freq_row = np.fft.fftfreq(pad_rows)
         freq_col = np.fft.fftfreq(pad_cols)
         freq_row_2d, freq_col_2d = np.meshgrid(freq_row, freq_col, indexing="ij")
         freq_sq = freq_row_2d**2 + freq_col_2d**2
-        freq_sq[0, 0] = 1.0  # avoid division by zero at DC
+        freq_sq[0, 0] = 1.0
 
-        fft_row = np.fft.fft2(row_pad)
-        fft_col = np.fft.fft2(col_pad)
+        fft_row = np.fft.fft2(pad_row)
+        fft_col = np.fft.fft2(pad_col)
 
-        # Fourier-space Poisson integration: V = -F^{-1}[(i*kr*Fr + i*kc*Fc) / k^2]
         fft_potential = -(1j * freq_row_2d * fft_row + 1j * freq_col_2d * fft_col) / freq_sq
         fft_potential[0, 0] = 0.0
 
