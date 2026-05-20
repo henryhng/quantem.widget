@@ -4253,10 +4253,15 @@ class Show4DSTEM(anywidget.AnyWidget):
         kx = q_grid * cos_t  # (n_q, n_theta)
         ky = q_grid * sin_t
 
-        # Ellipse correction: rotate by -theta_e, scale by diag(1/a, 1/b), rotate back.
-        # The semi-axes (a, b) describe the elliptical distortion of the BF disk.
-        # Sampling along an ellipse of axes (a, b, theta_e) at polar radius q corresponds
-        # to detector-space coords (after un-doing the ellipse): apply the inverse transform.
+        # Ellipse correction (GATHER convention — opposite sign to py4DSTEM
+        # `polar_datacube._transform_array`, which scatters detector pixels
+        # into polar bins). (a, b) are multiplier-ratios (1.0, 1.0 isotropic);
+        # the unit-circle q=1 traces the ellipse with semi-axes (a, b) along
+        # theta_e. Gather: rotate (kx, ky) by -theta_e, multiply by (a, b),
+        # rotate back. Direction pinned by
+        # test_polar_ellipse_correction_undistorts_ring_along_major_direction
+        # (real ring-distortion fixture) — do not flip without updating that
+        # test.
         a = max(float(self.polar_ellipse_a), 1e-6)
         b = max(float(self.polar_ellipse_b), 1e-6)
         te = float(self.polar_ellipse_theta_rad)

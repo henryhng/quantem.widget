@@ -75,29 +75,67 @@ def test_polar_radial_bytes_shape_and_value():
     np.testing.assert_allclose(radial, polar.mean(axis=1), rtol=1e-5, atol=1e-5)
 
 
-def test_polar_ellipse_correction_changes_output():
-    """A non-trivial ellipse (a, b, θ) yields different polar bytes than the
-    isotropic case (1.0, 1.0, 0.0)."""
-    w, _ = _make_widget(det_rows=64, det_cols=64, scan=4, seed=42)
+def test_polar_ellipse_correction_undistorts_ring_along_major_direction():
+    """Direction check: build a DP with a ring distorted into an ellipse (major
+    axis 1.2× along x). The widget's gather-direction correction with
+    (a=1.2, b=1.0, theta_e=0) must straighten the ring to constant q across
+    theta. The opposite scaling (1/a, 1/b) must make it worse. This pins the
+    sign of the ellipse transform so a future refactor cannot silently flip it.
+    """
+    det = 128
+    center = det / 2.0
+    yy, xx = np.mgrid[:det, :det].astype(np.float32) - center
+    # Ring at radius R=30, stretched by factor 1.2 along x:
+    ring_R = 30.0
+    ellipse_dist = np.sqrt((xx / (ring_R * 1.2)) ** 2 + (yy / ring_R) ** 2)
+    dp = np.exp(-((ellipse_dist - 1.0) ** 2) / 0.005).astype(np.float32)
+    data4d = dp[None, None, ...]
+
+    w = Show4DSTEM(data4d, verbose=False, precompute_virtual_images=False)
+    w.center_row = center
+    w.center_col = center
+    w.k_pixel_size = 1.0  # mrad/px
+    w.polar_q_min_mrad = 0.0
+    w.polar_q_max_mrad = 50.0
+    w.polar_n_q = 100
+    w.polar_n_theta = 90
     w.show_polar = True
-    isotropic = bytes(w.polar_bytes)
 
+    q_axis = np.linspace(w.polar_q_min_mrad, w.polar_q_max_mrad, w.polar_n_q)
+
+    def ring_q_std(widget):
+        polar = (
+            np.frombuffer(widget.polar_bytes, dtype=np.float32)
+            .copy()
+            .reshape(widget.polar_n_q, widget.polar_n_theta)
+        )
+        return float(q_axis[polar.argmax(axis=0)].std())
+
+    # Uncorrected: ring is at varying q across theta (the elliptical distortion).
     w.polar_ellipse_a = 1.0
-    w.polar_ellipse_b = 1.05
-    w.polar_ellipse_theta_rad = math.pi / 4
-    elliptical = bytes(w.polar_bytes)
+    w.polar_ellipse_b = 1.0
+    std_uncorrected = ring_q_std(w)
 
-    assert isotropic != elliptical
-    # And the radial profile also changes (not just the angular slicing).
-    iso_radial = np.frombuffer(
-        Show4DSTEM(
-            np.random.default_rng(42).random((4, 4, 64, 64), dtype=np.float32) * 100.0,
-            k_pixel_size=0.5,
-            verbose=False,
-        )._data.cpu().numpy(),
-        dtype=np.float32,
+    # CORRECT direction: multiply by (1.2, 1.0) -> straightens the ring.
+    w.polar_ellipse_a = 1.2
+    w.polar_ellipse_b = 1.0
+    std_correct = ring_q_std(w)
+
+    # INVERTED direction: would make it worse, not better.
+    w.polar_ellipse_a = 1.0 / 1.2
+    w.polar_ellipse_b = 1.0
+    std_inverted = ring_q_std(w)
+
+    # The correct direction must reduce the variance an order of magnitude.
+    assert std_correct < 0.3 * std_uncorrected, (
+        f"ellipse correction did not straighten ring: "
+        f"uncorrected std={std_uncorrected:.3f}, corrected std={std_correct:.3f}"
     )
-    assert iso_radial is not None  # sanity
+    # And the inverted direction must clearly make it worse.
+    assert std_inverted > std_uncorrected, (
+        f"inverted ellipse direction should be worse than no correction: "
+        f"uncorrected std={std_uncorrected:.3f}, inverted std={std_inverted:.3f}"
+    )
 
 
 def test_polar_deterministic_same_dp_same_bytes():
