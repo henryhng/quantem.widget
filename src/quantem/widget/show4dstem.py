@@ -39,7 +39,9 @@ import torch
 import traitlets
 
 from quantem.core.config import validate_device
+from quantem.core.utils.imaging_utils import upsampled_correlation_torch
 from quantem.widget.array_utils import to_numpy
+from quantem.widget.detector import detect_bf_disk
 from quantem.widget.io import IOResult, _format_memory
 from quantem.widget.json_state import (
     build_json_header,
@@ -61,6 +63,214 @@ DEFAULT_BF_RATIO = 0.125  # BF disk radius as fraction of detector size (1/8)
 SPARSE_MASK_THRESHOLD = 0.2  # Use sparse indexing below this mask coverage
 MIN_LOG_VALUE = 1e-10  # Minimum value for log scale to avoid log(0)
 DEFAULT_VI_ROI_RATIO = 0.15  # Default VI ROI size as fraction of scan dimension
+
+# ============================================================================
+# Bragg-disk detection (single diffraction pattern)
+# ============================================================================
+# Algorithm parity with py4DSTEM's _find_Bragg_disks_single (CPU path):
+#   (1) FFT of dp and probe_kernel
+#   (2) cross-power spectrum = FFT(dp) * conj(FFT(template))
+#       hybrid corr: |m|**corr_power * exp(i*angle(m)); inverse FFT, clamp >=0
+#   (3) Gaussian smoothing of cross-correlation (sigma)
+#   (4) local-maxima detection (maximum_filter footprint = min_peak_spacing)
+#   (5) filter by min_rel_intensity * peak_max, edge boundary, min_peak_spacing
+#       greedy NMS, keep top max_num_peaks
+#   (6) subpixel refinement:
+#       - 'pixel'  : no refinement
+#       - 'poly'   : 3x3 parabolic (closed-form, ~10 lines)
+#       - 'multicorr': DFT upsample via quantem upsampled_correlation_torch
+def detect_bragg_disks_single(
+    dp: np.ndarray,
+    probe_kernel: np.ndarray,
+    *,
+    corr_power: float = 1.0,
+    sigma: float = 2.0,
+    edge_boundary: int = 1,
+    min_relative_intensity: float = 0.005,
+    min_absolute_intensity: float = 0.0,
+    min_peak_spacing: float = 4.0,
+    max_num_peaks: int = 70,
+    subpixel: str = "multicorr",
+    upsample_factor: int = 4,
+) -> np.ndarray:
+    """Detect Bragg disks in a single diffraction pattern.
+
+    Cross-correlates ``dp`` with ``probe_kernel`` (real-space vacuum probe),
+    then locates local maxima and refines to sub-pixel precision.
+
+    Parameters
+    ----------
+    dp : (det_rows, det_cols) array
+        Diffraction pattern (float32, non-negative recommended).
+    probe_kernel : (det_rows, det_cols) array
+        Vacuum-probe template in real space. Must match dp shape.
+    corr_power : float
+        Cross-correlation power. ``1`` = pure cross-correlation,
+        ``0`` = phase correlation, in between = hybrid.
+    sigma : float
+        Std of Gaussian smoothing applied to the cross correlation before
+        maxima detection. Set 0 to disable.
+    edge_boundary : int
+        Reject peaks within this many pixels of the detector edge.
+    min_relative_intensity : float
+        Drop peaks whose correlation value is below this fraction of the
+        brightest peak's correlation value.
+    min_absolute_intensity : float
+        Drop peaks below this absolute correlation value.
+    min_peak_spacing : float
+        Pixels — minimum allowed separation between peaks (greedy NMS).
+    max_num_peaks : int
+        Keep at most this many peaks (intensity-sorted, descending).
+    subpixel : str
+        One of ``"pixel"``, ``"poly"``, ``"multicorr"``.
+    upsample_factor : int
+        Used only when ``subpixel == "multicorr"``. Must be >= 2.
+
+    Returns
+    -------
+    peaks : (N, 3) float32 array
+        Rows of ``[qy, qx, intensity]`` where ``qy`` is the row (vertical)
+        coordinate and ``qx`` is the column (horizontal) coordinate, both
+        in detector pixel units. Sorted by intensity descending.
+    """
+    from scipy.ndimage import gaussian_filter, maximum_filter
+
+    if subpixel not in {"pixel", "poly", "multicorr"}:
+        raise ValueError(
+            f"subpixel must be 'pixel', 'poly', or 'multicorr', got {subpixel!r}"
+        )
+
+    dp = np.asarray(dp, dtype=np.float32)
+    template = np.asarray(probe_kernel, dtype=np.float32)
+    if dp.shape != template.shape:
+        raise ValueError(
+            f"dp shape {dp.shape} must match probe_kernel shape {template.shape}"
+        )
+
+    # (1) FFTs
+    dp_ft = np.fft.fft2(dp)
+    template_ft_conj = np.conj(np.fft.fft2(template))
+
+    # (2) cross-power spectrum (hybrid correlation when corr_power != 1)
+    m = dp_ft * template_ft_conj
+    if corr_power != 1.0:
+        # |m|^p * exp(i*angle(m)) — preserves phase, modulates magnitude
+        cc_ft = (np.abs(m) ** float(corr_power)) * np.exp(1j * np.angle(m))
+    else:
+        cc_ft = m
+    cc = np.maximum(np.real(np.fft.ifft2(cc_ft)), 0.0).astype(np.float32)
+
+    # (3) Gaussian blur of correlogram
+    if sigma > 0:
+        cc_smooth = gaussian_filter(cc, float(sigma)).astype(np.float32)
+    else:
+        cc_smooth = cc
+
+    # (4) local maxima detection
+    footprint_size = max(3, int(round(float(min_peak_spacing))))
+    if footprint_size % 2 == 0:
+        footprint_size += 1
+    filtered = maximum_filter(cc_smooth, size=footprint_size, mode="constant", cval=0.0)
+    maxima = (cc_smooth == filtered) & (cc_smooth > 0)
+
+    # edge boundary
+    eb = max(1, int(edge_boundary))
+    if eb < maxima.shape[0] and eb < maxima.shape[1]:
+        maxima[:eb, :] = False
+        maxima[-eb:, :] = False
+        maxima[:, :eb] = False
+        maxima[:, -eb:] = False
+
+    rows, cols = np.nonzero(maxima)
+    if rows.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    intensities = cc_smooth[rows, cols]
+
+    # sort by intensity (descending)
+    order = np.argsort(-intensities)
+    rows = rows[order]
+    cols = cols[order]
+    intensities = intensities[order]
+
+    # (5) filtering
+    if min_absolute_intensity > 0:
+        keep = intensities >= float(min_absolute_intensity)
+        rows, cols, intensities = rows[keep], cols[keep], intensities[keep]
+    if intensities.size and min_relative_intensity > 0:
+        peak_max = float(intensities[0])
+        if peak_max > 0:
+            keep = intensities >= float(min_relative_intensity) * peak_max
+            rows, cols, intensities = rows[keep], cols[keep], intensities[keep]
+
+    # greedy NMS for minimum spacing
+    if min_peak_spacing > 0 and rows.size > 1:
+        spacing_sq = float(min_peak_spacing) ** 2
+        keep_mask = np.ones(rows.size, dtype=bool)
+        for i in range(rows.size):
+            if not keep_mask[i]:
+                continue
+            dy = rows[i + 1 :] - rows[i]
+            dx = cols[i + 1 :] - cols[i]
+            too_close = (dy * dy + dx * dx) < spacing_sq
+            keep_mask[i + 1 :] &= ~too_close
+        rows = rows[keep_mask]
+        cols = cols[keep_mask]
+        intensities = intensities[keep_mask]
+
+    # cap at max_num_peaks
+    if int(max_num_peaks) > 0 and rows.size > int(max_num_peaks):
+        rows = rows[: int(max_num_peaks)]
+        cols = cols[: int(max_num_peaks)]
+        intensities = intensities[: int(max_num_peaks)]
+
+    if rows.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+
+    qy = rows.astype(np.float64)
+    qx = cols.astype(np.float64)
+    inten = intensities.astype(np.float64)
+
+    # (6) subpixel refinement
+    if subpixel == "pixel":
+        pass
+    elif subpixel == "poly":
+        H, W = cc_smooth.shape
+        for i in range(qy.size):
+            r = int(rows[i])
+            c = int(cols[i])
+            if r <= 0 or r >= H - 1 or c <= 0 or c >= W - 1:
+                continue
+            I0 = float(cc_smooth[r, c])
+            Iy_m = float(cc_smooth[r - 1, c])
+            Iy_p = float(cc_smooth[r + 1, c])
+            Ix_m = float(cc_smooth[r, c - 1])
+            Ix_p = float(cc_smooth[r, c + 1])
+            denom_y = 4.0 * I0 - 2.0 * Iy_p - 2.0 * Iy_m
+            denom_x = 4.0 * I0 - 2.0 * Ix_p - 2.0 * Ix_m
+            dy = (Iy_p - Iy_m) / denom_y if denom_y != 0 else 0.0
+            dx = (Ix_p - Ix_m) / denom_x if denom_x != 0 else 0.0
+            # clamp to [-0.5, 0.5] to avoid runaway
+            dy = max(-0.5, min(0.5, dy))
+            dx = max(-0.5, min(0.5, dx))
+            qy[i] += dy
+            qx[i] += dx
+    else:  # multicorr — DFT upsampling via quantem primitive
+        up = max(2, int(upsample_factor))
+        cc_ft_full = np.fft.fft2(cc)  # use the un-smoothed cc for upsampling
+        cc_ft_torch = torch.from_numpy(cc_ft_full)
+        for i in range(qy.size):
+            xy_shift = torch.tensor([float(qy[i]), float(qx[i])], dtype=torch.float64)
+            try:
+                refined = upsampled_correlation_torch(cc_ft_torch, up, xy_shift)
+                qy[i] = float(refined[0].item())
+                qx[i] = float(refined[1].item())
+            except Exception:
+                # fall back to pixel coords if DFT upsample fails (e.g. near edge)
+                pass
+
+    out = np.column_stack([qy, qx, inten]).astype(np.float32)
+    return out
+
 
 class Show4DSTEM(anywidget.AnyWidget):
     """
@@ -286,6 +496,39 @@ class Show4DSTEM(anywidget.AnyWidget):
     # Line Profile (for DP panel)
     profile_line = traitlets.List(traitlets.Dict()).tag(sync=True)
     profile_width = traitlets.Int(1).tag(sync=True)
+
+    # =========================================================================
+    # Bragg-disk detection (current DP only)
+    # =========================================================================
+    # NOTE: bragg detection runs on the CURRENT DP only. Full-4D detection
+    # (bragg_peaks_all) is intentionally deferred to a separate PR — it is a
+    # heavy compute (cross-correlate every DP in the dataset) and would block
+    # the UI without progress reporting and chunked execution.
+    vacuum_probe_bytes = traitlets.Bytes(b"").tag(sync=True)
+    bragg_detect_active = traitlets.Bool(False).tag(sync=True)
+    bragg_corr_power = traitlets.Float(1.0).tag(sync=True)
+    bragg_sigma = traitlets.Float(2.0).tag(sync=True)
+    bragg_edge_boundary = traitlets.Int(1).tag(sync=True)
+    bragg_min_rel = traitlets.Float(0.005).tag(sync=True)
+    bragg_min_abs = traitlets.Float(0.0).tag(sync=True)
+    bragg_min_peak_spacing = traitlets.Float(4.0).tag(sync=True)
+    bragg_max_peaks = traitlets.Int(70).tag(sync=True)
+    bragg_subpixel = traitlets.Unicode("multicorr").tag(sync=True)
+    bragg_upsample = traitlets.Int(4).tag(sync=True)
+    # Detected peaks for the current DP as float32 (N, 3): [qy, qx, intensity]
+    bragg_peaks_bytes = traitlets.Bytes(b"").tag(sync=True)
+    # Transient frontend-triggered actions (frontend sets True, backend resets False)
+    bragg_auto_probe_requested = traitlets.Bool(False).tag(sync=True)
+
+    @traitlets.validate("bragg_subpixel")
+    def _validate_bragg_subpixel(self, proposal):
+        value = str(proposal["value"]).lower()
+        if value not in {"pixel", "poly", "multicorr"}:
+            raise traitlets.TraitError(
+                "bragg_subpixel must be one of 'pixel', 'poly', 'multicorr'; "
+                f"got {proposal['value']!r}"
+            )
+        return value
 
     # =========================================================================
     # Tool visibility / locking
@@ -681,6 +924,17 @@ class Show4DSTEM(anywidget.AnyWidget):
             "vi_roi_radius", "vi_roi_width", "vi_roi_height"
         ])
 
+        # Bragg-disk detection — recompute when relevant traits change
+        self.observe(self._on_bragg_param_change, names=[
+            "bragg_detect_active",
+            "bragg_corr_power", "bragg_sigma", "bragg_edge_boundary",
+            "bragg_min_rel", "bragg_min_abs", "bragg_min_peak_spacing",
+            "bragg_max_peaks", "bragg_subpixel", "bragg_upsample",
+            "vacuum_probe_bytes",
+            "pos_row", "pos_col", "frame_idx",
+        ])
+        self.observe(self._on_bragg_auto_probe, names=["bragg_auto_probe_requested"])
+
         if state is not None:
             if isinstance(state, (str, pathlib.Path)):
                 state = unwrap_state_payload(
@@ -750,11 +1004,17 @@ class Show4DSTEM(anywidget.AnyWidget):
         self._cached_bf_virtual = None
         self._cached_abf_virtual = None
         self._cached_adf_virtual = None
+        # Reset Bragg state: detector shape may have changed, so any custom
+        # vacuum probe and stale peaks are invalid.
+        self.vacuum_probe_bytes = b""
+        self.bragg_peaks_bytes = b""
         with self.hold_trait_notifications():
             self.pos_row = min(self.pos_row, self.shape_rows - 1)
             self.pos_col = min(self.pos_col, self.shape_cols - 1)
         self._compute_virtual_image_from_roi()
         self._update_frame()
+        if self.bragg_detect_active:
+            self._recompute_bragg_peaks()
 
     def __repr__(self) -> str:
         k_unit = "mrad" if self.k_calibrated else "px"
@@ -839,6 +1099,16 @@ class Show4DSTEM(anywidget.AnyWidget):
             "frame_boomerang": self.frame_boomerang,
             "disabled_tools": self.disabled_tools,
             "hidden_tools": self.hidden_tools,
+            "bragg_detect_active": self.bragg_detect_active,
+            "bragg_corr_power": self.bragg_corr_power,
+            "bragg_sigma": self.bragg_sigma,
+            "bragg_edge_boundary": self.bragg_edge_boundary,
+            "bragg_min_rel": self.bragg_min_rel,
+            "bragg_min_abs": self.bragg_min_abs,
+            "bragg_min_peak_spacing": self.bragg_min_peak_spacing,
+            "bragg_max_peaks": self.bragg_max_peaks,
+            "bragg_subpixel": self.bragg_subpixel,
+            "bragg_upsample": self.bragg_upsample,
         }
 
     def save(self, path: str):
@@ -946,6 +1216,14 @@ class Show4DSTEM(anywidget.AnyWidget):
         if self.profile_line and len(self.profile_line) == 2:
             p0, p1 = self.profile_line[0], self.profile_line[1]
             lines.append(f"Profile:  ({p0['row']:.0f}, {p0['col']:.0f}) -> ({p1['row']:.0f}, {p1['col']:.0f}) width={self.profile_width}")
+        if self.bragg_detect_active:
+            n_peaks = 0
+            if self.bragg_peaks_bytes:
+                n_peaks = len(self.bragg_peaks_bytes) // (3 * 4)
+            lines.append(
+                f"Bragg:    {n_peaks} peaks, subpixel={self.bragg_subpixel}, "
+                f"sigma={self.bragg_sigma:.2f}, corr_power={self.bragg_corr_power:.2f}"
+            )
         if self.disabled_tools:
             lines.append(f"Locked:   {', '.join(self.disabled_tools)}")
         if self.hidden_tools:
@@ -4138,6 +4416,156 @@ class Show4DSTEM(anywidget.AnyWidget):
 
         # Send raw float32 (consistent with other data paths — JS handles normalization)
         self.summed_dp_bytes = avg_dp.cpu().numpy().tobytes()
+
+    # =========================================================================
+    # Bragg-disk detection (per-DP)
+    # =========================================================================
+
+    def _get_vacuum_probe(self) -> np.ndarray:
+        """Return current vacuum_probe array (det_rows x det_cols, float32).
+
+        If ``vacuum_probe_bytes`` is empty, builds an auto vacuum probe from
+        the BF center + radius (soft disk mask).
+        """
+        expected = self.det_rows * self.det_cols
+        if self.vacuum_probe_bytes:
+            arr = np.frombuffer(self.vacuum_probe_bytes, dtype=np.float32)
+            if arr.size == expected:
+                return arr.reshape(self.det_rows, self.det_cols).copy()
+        return self._build_auto_vacuum_probe()
+
+    def _build_auto_vacuum_probe(self) -> np.ndarray:
+        """Build a soft disk vacuum probe centered at the BF disk center.
+
+        Returns a 2D float32 array of shape (det_rows, det_cols) with a soft
+        disk of radius ``bf_radius`` centered at ``(center_row, center_col)``.
+        This is the "user-visible" centered probe; ``detect_bragg_peaks``
+        internally shifts it to the origin for the matched filter.
+        """
+        # Use NumPy primitives (small detector-sized array, no GPU needed)
+        rows = np.arange(self.det_rows, dtype=np.float32)[:, None]
+        cols = np.arange(self.det_cols, dtype=np.float32)[None, :]
+        cr = float(self.center_row)
+        cc = float(self.center_col)
+        radius = max(float(self.bf_radius), 1.0)
+        rad = np.sqrt((rows - cr) ** 2 + (cols - cc) ** 2)
+        # Soft (cosine-edge) disk: 1 inside, smooth roll-off across 2 pixels at the edge
+        soft_edge = 2.0
+        probe = np.clip((radius + soft_edge - rad) / (2 * soft_edge), 0.0, 1.0).astype(np.float32)
+        return probe
+
+    def _vacuum_probe_kernel(self) -> np.ndarray:
+        """Return the origin-aligned probe kernel used for matched filtering.
+
+        Centered vacuum probe (with peak at ``(center_row, center_col)``) is
+        shifted so its peak sits at the origin ``(0, 0)`` (FFT convention,
+        same as py4DSTEM's ``probe.kernel``). After this shift, cross
+        correlation peaks land directly at DP Bragg disk positions.
+        """
+        probe_centered = self._get_vacuum_probe()
+        # Shift the probe center to the FFT origin (0, 0)
+        shift_row = -int(round(float(self.center_row)))
+        shift_col = -int(round(float(self.center_col)))
+        return np.roll(probe_centered, shift=(shift_row, shift_col), axis=(0, 1)).astype(np.float32)
+
+    def set_vacuum_probe(self, probe_or_None) -> Self:
+        """Set the vacuum probe template used for Bragg-disk detection.
+
+        Parameters
+        ----------
+        probe_or_None : 2D array or None
+            (det_rows, det_cols) array. Pass ``None`` to clear the custom probe
+            and fall back to the auto-built soft-disk probe.
+        """
+        if probe_or_None is None:
+            self.vacuum_probe_bytes = b""
+            return self
+        arr = to_numpy(probe_or_None).astype(np.float32)
+        if arr.shape != (self.det_rows, self.det_cols):
+            raise ValueError(
+                f"vacuum probe shape {arr.shape} must match detector shape "
+                f"({self.det_rows}, {self.det_cols})"
+            )
+        self.vacuum_probe_bytes = arr.tobytes()
+        return self
+
+    def detect_bragg_peaks(
+        self,
+        pos_row: int | None = None,
+        pos_col: int | None = None,
+    ) -> np.ndarray:
+        """Detect Bragg peaks for the diffraction pattern at (pos_row, pos_col).
+
+        If ``pos_row`` / ``pos_col`` are ``None`` the current scan position is
+        used. Returns a ``(N, 3)`` float32 array of ``[qy, qx, intensity]``.
+
+        Note
+        ----
+        This runs detection on the CURRENT DP only. Full-4D detection
+        (`bragg_peaks_all`) is intentionally not provided here — it is a
+        heavy compute that needs progress reporting and chunking.
+        """
+        if self._data is None:
+            return np.zeros((0, 3), dtype=np.float32)
+        r = self.pos_row if pos_row is None else int(pos_row)
+        c = self.pos_col if pos_col is None else int(pos_col)
+        r = max(0, min(r, self.shape_rows - 1))
+        c = max(0, min(c, self.shape_cols - 1))
+        dp = self._get_frame(r, c)
+        kernel = self._vacuum_probe_kernel()
+        return detect_bragg_disks_single(
+            dp,
+            kernel,
+            corr_power=float(self.bragg_corr_power),
+            sigma=float(self.bragg_sigma),
+            edge_boundary=int(self.bragg_edge_boundary),
+            min_relative_intensity=float(self.bragg_min_rel),
+            min_absolute_intensity=float(self.bragg_min_abs),
+            min_peak_spacing=float(self.bragg_min_peak_spacing),
+            max_num_peaks=int(self.bragg_max_peaks),
+            subpixel=str(self.bragg_subpixel),
+            upsample_factor=int(self.bragg_upsample),
+        )
+
+    def _on_bragg_param_change(self, change=None):
+        """Recompute Bragg peaks for current DP when relevant traits change."""
+        if not self.bragg_detect_active:
+            # Clear stale peaks when toggled off
+            if self.bragg_peaks_bytes:
+                self.bragg_peaks_bytes = b""
+            return
+        self._recompute_bragg_peaks()
+
+    def _on_bragg_auto_probe(self, change=None):
+        """Handle frontend Auto-vacuum-probe button."""
+        if not self.bragg_auto_probe_requested:
+            return
+        try:
+            # Detect BF disk on (numpy view of) the current frame data
+            data = self._frame_data
+            if data.ndim == 4:
+                arr = data.cpu().numpy()
+            else:
+                arr = data.cpu().numpy().reshape(self.shape_rows, self.shape_cols, self.det_rows, self.det_cols)
+            cr, cc, br = detect_bf_disk(arr)
+            self.center_row = float(cr)
+            self.center_col = float(cc)
+            self.bf_radius = float(br)
+            # Clear any custom probe so the auto-built one is used next
+            self.vacuum_probe_bytes = b""
+            if self.bragg_detect_active:
+                self._recompute_bragg_peaks()
+        finally:
+            self.bragg_auto_probe_requested = False
+
+    def _recompute_bragg_peaks(self):
+        """Run detection on current DP and write bragg_peaks_bytes."""
+        try:
+            peaks = self.detect_bragg_peaks()
+        except Exception:
+            self.bragg_peaks_bytes = b""
+            return
+        self.bragg_peaks_bytes = np.asarray(peaks, dtype=np.float32).tobytes()
 
     def _create_circular_mask(self, cx: float, cy: float, radius: float):
         """Create circular mask (boolean tensor on device)."""

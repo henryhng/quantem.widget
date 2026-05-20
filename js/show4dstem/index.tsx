@@ -1068,6 +1068,18 @@ function Show4DSTEM() {
   const [viStats] = useModelState<number[]>("vi_stats");  // [mean, min, max, std]
   const [showFft, setShowFft] = useModelState<boolean>("show_fft");
   const [fftWindow, setFftWindow] = useModelState<boolean>("fft_window");
+
+  // Bragg-disk detection state (current DP)
+  const [braggDetectActive, setBraggDetectActive] = useModelState<boolean>("bragg_detect_active");
+  const [braggCorrPower, setBraggCorrPower] = useModelState<number>("bragg_corr_power");
+  const [braggSigma, setBraggSigma] = useModelState<number>("bragg_sigma");
+  const [braggMinRel, setBraggMinRel] = useModelState<number>("bragg_min_rel");
+  const [braggMinPeakSpacing, setBraggMinPeakSpacing] = useModelState<number>("bragg_min_peak_spacing");
+  const [braggMaxPeaks, setBraggMaxPeaks] = useModelState<number>("bragg_max_peaks");
+  const [braggSubpixel, setBraggSubpixel] = useModelState<string>("bragg_subpixel");
+  const [braggPeaksBytes] = useModelState<DataView>("bragg_peaks_bytes");
+  const [, setBraggAutoProbeRequested] = useModelState<boolean>("bragg_auto_probe_requested");
+
   const [disabledTools, setDisabledTools] = useModelState<string[]>("disabled_tools");
   const [hiddenTools, setHiddenTools] = useModelState<string[]>("hidden_tools");
   const [showControls] = useModelState<boolean>("show_controls");
@@ -1181,6 +1193,17 @@ function Show4DSTEM() {
   // Histogram data - use state to ensure re-renders (both are Float32Array now)
   const [dpHistogramData, setDpHistogramData] = React.useState<Float32Array | null>(null);
   const [viHistogramData, setViHistogramData] = React.useState<Float32Array | null>(null);
+
+  // Parse bragg_peaks_bytes -> Float32Array of [qy, qx, intensity] rows (N, 3).
+  // Returns null when detection is inactive or there are no peaks.
+  const braggPeaks = React.useMemo<Float32Array | null>(() => {
+    if (!braggDetectActive) return null;
+    if (!braggPeaksBytes || braggPeaksBytes.byteLength < 12) return null;
+    const arr = new Float32Array(braggPeaksBytes.buffer, braggPeaksBytes.byteOffset, braggPeaksBytes.byteLength / 4);
+    // ensure multiple of 3 (qy, qx, intensity per peak)
+    if (arr.length % 3 !== 0) return null;
+    return arr;
+  }, [braggDetectActive, braggPeaksBytes]);
 
   // Parse DP frame bytes for histogram (float32 now)
   React.useEffect(() => {
@@ -2078,6 +2101,57 @@ function Show4DSTEM() {
       }
     }
 
+    // Bragg-disk overlay — circle markers at detected peaks (current DP)
+    if (braggDetectActive && braggPeaks && braggPeaks.length > 0) {
+      const canvas = dpUiRef.current;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.save();
+        ctx.scale(DPR, DPR);
+        const cssW = canvas.width / DPR;
+        const cssH = canvas.height / DPR;
+        const scaleX = cssW / detCols;
+        const scaleY = cssH / detRows;
+        const toScreenX = (col: number) => col * dpZoom * scaleX + dpPanX * scaleX;
+        const toScreenY = (row: number) => row * dpZoom * scaleY + dpPanY * scaleY;
+        const nPeaks = braggPeaks.length / 3;
+        const markerRadiusPx = 4;
+        ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+        ctx.shadowBlur = 2;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        ctx.strokeStyle = accentGreen;
+        ctx.lineWidth = 1.5;
+        ctx.fillStyle = accentGreen + "33"; // ~20% alpha tint
+        for (let i = 0; i < nPeaks; i++) {
+          const qy = braggPeaks[i * 3];
+          const qx = braggPeaks[i * 3 + 1];
+          const sx = toScreenX(qx);
+          const sy = toScreenY(qy);
+          ctx.beginPath();
+          ctx.arc(sx, sy, markerRadiusPx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+        // Numeric labels (intensity-descending order) only when count <= 20
+        if (nPeaks <= 20) {
+          ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+          ctx.shadowBlur = 3;
+          ctx.fillStyle = accentGreen;
+          ctx.font = "bold 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif";
+          ctx.textBaseline = "middle";
+          for (let i = 0; i < nPeaks; i++) {
+            const qy = braggPeaks[i * 3];
+            const qx = braggPeaks[i * 3 + 1];
+            const sx = toScreenX(qx);
+            const sy = toScreenY(qy);
+            ctx.fillText(String(i + 1), sx + markerRadiusPx + 3, sy);
+          }
+        }
+        ctx.restore();
+      }
+    }
+
     // Colorbar overlay — uses cached vmin/vmax from the expensive DP offscreen effect
     if (showDpColorbar) {
       const canvas = dpUiRef.current;
@@ -2093,7 +2167,8 @@ function Show4DSTEM() {
       }
     }
   }, [dpZoom, dpPanX, dpPanY, kPixelSize, kCalibrated, detRows, detCols, roiMode, roiRadius, roiRadiusInner, roiWidth, roiHeight, localKCol, localKRow, isDraggingDP, isDraggingResize, isDraggingResizeInner, isHoveringResize, isHoveringResizeInner,
-      profileActive, profilePoints, profileWidth, themeColors, showDpColorbar, dpColormap, dpScaleMode, dpVminPct, dpVmaxPct, canvasSize, roiColors]);
+      profileActive, profilePoints, profileWidth, themeColors, showDpColorbar, dpColormap, dpScaleMode, dpVminPct, dpVmaxPct, canvasSize, roiColors,
+      braggDetectActive, braggPeaks, accentGreen]);
   
   // VI scale bar + crosshair + ROI + profile lines (high-DPI)
   React.useEffect(() => {
@@ -3880,6 +3955,78 @@ function Show4DSTEM() {
                     <Switch checked={showDpColorbar} onChange={(e) => { if (!lockDisplay) setShowDpColorbar(e.target.checked); }} disabled={lockDisplay} size="small" sx={switchStyles.small} />
                   </Box>
                 )}
+                {/* Row 3: Bragg disk detection (collapsible — body shows when active) */}
+                <Box sx={{ ...controlRow, border: `1px solid ${themeColors.border}`, bgcolor: themeColors.controlBg, flexWrap: "wrap" }}>
+                  <Typography sx={{ ...typo.label, fontSize: 10, color: braggDetectActive ? accentGreen : themeColors.textMuted }}>
+                    Bragg:
+                  </Typography>
+                  <Switch
+                    checked={braggDetectActive}
+                    onChange={(e) => setBraggDetectActive(e.target.checked)}
+                    size="small"
+                    sx={switchStyles.small}
+                  />
+                  {braggDetectActive && (
+                    <>
+                      <Typography sx={{ ...typo.label, fontSize: 10 }}>corr</Typography>
+                      <input
+                        type="number" min={0} max={1} step={0.1}
+                        value={braggCorrPower}
+                        onChange={(e) => setBraggCorrPower(Number(e.target.value))}
+                        style={{ width: 42, fontSize: 10, padding: "1px 3px", background: themeColors.controlBg, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                      />
+                      <Typography sx={{ ...typo.label, fontSize: 10 }}>σ</Typography>
+                      <input
+                        type="number" min={0} step={0.5}
+                        value={braggSigma}
+                        onChange={(e) => setBraggSigma(Number(e.target.value))}
+                        style={{ width: 42, fontSize: 10, padding: "1px 3px", background: themeColors.controlBg, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                      />
+                      <Typography sx={{ ...typo.label, fontSize: 10 }}>min%</Typography>
+                      <input
+                        type="number" min={0} max={1} step={0.005}
+                        value={braggMinRel}
+                        onChange={(e) => setBraggMinRel(Number(e.target.value))}
+                        style={{ width: 50, fontSize: 10, padding: "1px 3px", background: themeColors.controlBg, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                      />
+                      <Typography sx={{ ...typo.label, fontSize: 10 }}>spc</Typography>
+                      <input
+                        type="number" min={1} step={1}
+                        value={braggMinPeakSpacing}
+                        onChange={(e) => setBraggMinPeakSpacing(Number(e.target.value))}
+                        style={{ width: 42, fontSize: 10, padding: "1px 3px", background: themeColors.controlBg, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                      />
+                      <Typography sx={{ ...typo.label, fontSize: 10 }}>max</Typography>
+                      <input
+                        type="number" min={1} step={1}
+                        value={braggMaxPeaks}
+                        onChange={(e) => setBraggMaxPeaks(Math.max(1, parseInt(e.target.value || "1", 10)))}
+                        style={{ width: 42, fontSize: 10, padding: "1px 3px", background: themeColors.controlBg, color: themeColors.text, border: `1px solid ${themeColors.border}` }}
+                      />
+                      <Select
+                        value={braggSubpixel}
+                        onChange={(e) => setBraggSubpixel(String(e.target.value))}
+                        size="small"
+                        sx={{ ...themedSelect, minWidth: 70, fontSize: 10 }}
+                        MenuProps={themedMenuProps}
+                      >
+                        <MenuItem value="pixel">pixel</MenuItem>
+                        <MenuItem value="poly">poly</MenuItem>
+                        <MenuItem value="multicorr">multicorr</MenuItem>
+                      </Select>
+                      <Button
+                        size="small"
+                        sx={{ ...compactButton, color: accentGreen }}
+                        onClick={() => setBraggAutoProbeRequested(true)}
+                      >
+                        Auto probe
+                      </Button>
+                      <Typography sx={{ ...typo.label, fontSize: 10, color: themeColors.textMuted, ml: "auto" }}>
+                        {braggPeaks ? braggPeaks.length / 3 : 0} peaks
+                      </Typography>
+                    </>
+                  )}
+                </Box>
               </Box>
               {/* Right: Histogram spanning both rows */}
               {!hideHistogram && (
