@@ -288,6 +288,25 @@ class Show4DSTEM(anywidget.AnyWidget):
     profile_width = traitlets.Int(1).tag(sync=True)
 
     # =========================================================================
+    # Polar / Azimuthal sub-view
+    # Polar (q, theta) resampling of the current diffraction pattern,
+    # with optional ellipse correction. Produces a 2D polar image and
+    # a 1D radial profile (mean over theta).
+    # =========================================================================
+    show_polar = traitlets.Bool(False).tag(sync=True)
+    polar_q_min_mrad = traitlets.Float(0.0).tag(sync=True)
+    polar_q_max_mrad = traitlets.Float(0.0).tag(sync=True)  # 0 = auto from detector shape
+    polar_n_q = traitlets.Int(128).tag(sync=True)
+    polar_n_theta = traitlets.Int(180).tag(sync=True)
+    polar_ellipse_a = traitlets.Float(1.0).tag(sync=True)
+    polar_ellipse_b = traitlets.Float(1.0).tag(sync=True)
+    polar_ellipse_theta_rad = traitlets.Float(0.0).tag(sync=True)
+    polar_bytes = traitlets.Bytes(b"").tag(sync=True)
+    polar_radial_bytes = traitlets.Bytes(b"").tag(sync=True)
+    polar_q_mrad_min = traitlets.Float(0.0).tag(sync=True)
+    polar_q_mrad_max = traitlets.Float(0.0).tag(sync=True)
+
+    # =========================================================================
     # Tool visibility / locking
     # =========================================================================
     disabled_tools = traitlets.List(traitlets.Unicode()).tag(sync=True)
@@ -681,6 +700,16 @@ class Show4DSTEM(anywidget.AnyWidget):
             "vi_roi_radius", "vi_roi_width", "vi_roi_height"
         ])
 
+        # Polar sub-view: recompute when polar settings or scan position change.
+        # pos_row/pos_col already trigger _update_frame; polar piggybacks on that
+        # to avoid a second firing for the same position change.
+        self.observe(self._on_polar_change, names=[
+            "show_polar",
+            "polar_q_min_mrad", "polar_q_max_mrad",
+            "polar_n_q", "polar_n_theta",
+            "polar_ellipse_a", "polar_ellipse_b", "polar_ellipse_theta_rad",
+        ])
+
         if state is not None:
             if isinstance(state, (str, pathlib.Path)):
                 state = unwrap_state_payload(
@@ -839,6 +868,14 @@ class Show4DSTEM(anywidget.AnyWidget):
             "frame_boomerang": self.frame_boomerang,
             "disabled_tools": self.disabled_tools,
             "hidden_tools": self.hidden_tools,
+            "show_polar": self.show_polar,
+            "polar_q_min_mrad": self.polar_q_min_mrad,
+            "polar_q_max_mrad": self.polar_q_max_mrad,
+            "polar_n_q": self.polar_n_q,
+            "polar_n_theta": self.polar_n_theta,
+            "polar_ellipse_a": self.polar_ellipse_a,
+            "polar_ellipse_b": self.polar_ellipse_b,
+            "polar_ellipse_theta_rad": self.polar_ellipse_theta_rad,
         }
 
     def save(self, path: str):
@@ -946,6 +983,13 @@ class Show4DSTEM(anywidget.AnyWidget):
         if self.profile_line and len(self.profile_line) == 2:
             p0, p1 = self.profile_line[0], self.profile_line[1]
             lines.append(f"Profile:  ({p0['row']:.0f}, {p0['col']:.0f}) -> ({p1['row']:.0f}, {p1['col']:.0f}) width={self.profile_width}")
+        if self.show_polar:
+            q_unit = "mrad" if self.k_calibrated else "px"
+            ell = f"a={self.polar_ellipse_a:.3f}, b={self.polar_ellipse_b:.3f}, θ={self.polar_ellipse_theta_rad:.3f} rad"
+            lines.append(
+                f"Polar:    {self.polar_n_q}q × {self.polar_n_theta}θ, "
+                f"q=[{self.polar_q_mrad_min:.2f}, {self.polar_q_mrad_max:.2f}] {q_unit}; {ell}"
+            )
         if self.disabled_tools:
             lines.append(f"Locked:   {', '.join(self.disabled_tools)}")
         if self.hidden_tools:
@@ -4066,6 +4110,11 @@ class Show4DSTEM(anywidget.AnyWidget):
         # Convert to numpy only for sending bytes to frontend
         self.frame_bytes = frame.cpu().numpy().tobytes()
 
+        # Polar sub-view follows the current DP; reuse the already-loaded frame
+        # to avoid a second indexing into _data.
+        if self.show_polar:
+            self._compute_polar(frame)
+
     def _on_roi_change(self, change=None):
         """Recompute virtual image when individual ROI params change.
 
@@ -4138,6 +4187,137 @@ class Show4DSTEM(anywidget.AnyWidget):
 
         # Send raw float32 (consistent with other data paths — JS handles normalization)
         self.summed_dp_bytes = avg_dp.cpu().numpy().tobytes()
+
+    def _on_polar_change(self, change=None):
+        """Recompute polar sub-view when any polar trait changes."""
+        if not self.show_polar:
+            # Clear outputs when polar view is disabled
+            if self.polar_bytes or self.polar_radial_bytes:
+                with self.hold_sync():
+                    self.polar_bytes = b""
+                    self.polar_radial_bytes = b""
+                    self.polar_q_mrad_min = 0.0
+                    self.polar_q_mrad_max = 0.0
+            return
+        self._compute_polar()
+
+    def _compute_polar(self, dp: torch.Tensor | None = None):
+        """Resample the current diffraction pattern to (q, theta) coordinates.
+
+        Implementation: direct bilinear "gather" interpolation. Builds a
+        polar grid in detector-pixel space centered on (center_row, center_col),
+        applies the ellipse transform to map (q, theta) -> (det_row, det_col),
+        and bilinearly samples the DP. Quantem's `radially_project_fourier_tensor`
+        only produces 1D radial profiles over an fftfreq grid (not the 2D
+        (q, theta) image required here), so the polar resampling is
+        implemented inline with torch primitives. The 1D radial profile is
+        the row-mean of the polar image (mean over theta at each q).
+        """
+        if self._data is None:
+            return
+        if dp is None:
+            data = self._frame_data
+            if data.ndim == 3:
+                idx = self.pos_row * self.shape_cols + self.pos_col
+                dp = data[idx]
+            else:
+                dp = data[self.pos_row, self.pos_col]
+
+        n_q = max(2, int(self.polar_n_q))
+        n_theta = max(2, int(self.polar_n_theta))
+
+        # Resolve q range (mrad). 0 = auto from detector geometry.
+        k_pixel = max(float(self.k_pixel_size), 1e-12)
+        det_diag = float(min(self.det_rows, self.det_cols)) / 2.0
+        auto_q_max_mrad = det_diag * k_pixel
+        q_min = max(0.0, float(self.polar_q_min_mrad))
+        q_max = float(self.polar_q_max_mrad)
+        if q_max <= q_min:
+            q_max = auto_q_max_mrad
+        if q_max <= q_min:
+            # Degenerate calibration; fall back to pixel units
+            q_min = 0.0
+            q_max = det_diag
+
+        device = self._device
+        # Build (q, theta) grid: q on the first axis (rows), theta on the second (cols)
+        q_axis = torch.linspace(q_min, q_max, n_q, device=device, dtype=torch.float32)
+        theta_axis = torch.linspace(
+            0.0, 2.0 * math.pi, n_theta + 1, device=device, dtype=torch.float32
+        )[:-1]  # exclude 2*pi (duplicate of 0)
+
+        # In mrad-space cartesian: kx = q*cos(theta), ky = q*sin(theta)
+        cos_t = torch.cos(theta_axis)[None, :]  # (1, n_theta)
+        sin_t = torch.sin(theta_axis)[None, :]
+        q_grid = q_axis[:, None]  # (n_q, 1)
+        kx = q_grid * cos_t  # (n_q, n_theta)
+        ky = q_grid * sin_t
+
+        # Ellipse correction: rotate by -theta_e, scale by diag(1/a, 1/b), rotate back.
+        # The semi-axes (a, b) describe the elliptical distortion of the BF disk.
+        # Sampling along an ellipse of axes (a, b, theta_e) at polar radius q corresponds
+        # to detector-space coords (after un-doing the ellipse): apply the inverse transform.
+        a = max(float(self.polar_ellipse_a), 1e-6)
+        b = max(float(self.polar_ellipse_b), 1e-6)
+        te = float(self.polar_ellipse_theta_rad)
+        if not (math.isclose(a, 1.0) and math.isclose(b, 1.0) and math.isclose(te, 0.0)):
+            ct = math.cos(te)
+            st = math.sin(te)
+            # Rotate (kx, ky) by -theta_e into ellipse-aligned frame
+            kx_e = ct * kx + st * ky
+            ky_e = -st * kx + ct * ky
+            # Scale: along major axis by a, along minor by b (so q=1 traces the ellipse)
+            kx_e = kx_e * a
+            ky_e = ky_e * b
+            # Rotate back
+            kx = ct * kx_e - st * ky_e
+            ky = st * kx_e + ct * ky_e
+
+        # Convert mrad -> detector pixel coords using k_pixel_size, offset by center
+        # k_pixel = mrad / pixel, so pixel = mrad / k_pixel
+        col_pix = self.center_col + (kx / k_pixel)
+        row_pix = self.center_row + (ky / k_pixel)
+
+        # Bilinear gather: clamp to valid range, then sample 4 corners
+        n_rows = self.det_rows
+        n_cols = self.det_cols
+        r0 = torch.floor(row_pix).long()
+        c0 = torch.floor(col_pix).long()
+        dr = (row_pix - r0.float())
+        dc = (col_pix - c0.float())
+
+        # Validity mask: points whose 2x2 bilinear stencil falls inside the detector
+        valid = (r0 >= 0) & (r0 < n_rows - 1) & (c0 >= 0) & (c0 < n_cols - 1)
+        # Clamp indices to valid range (out-of-range pixels will be zeroed via `valid`)
+        r0c = r0.clamp(0, n_rows - 2)
+        c0c = c0.clamp(0, n_cols - 2)
+        r1c = r0c + 1
+        c1c = c0c + 1
+
+        dp_f = dp.to(dtype=torch.float32)
+        v00 = dp_f[r0c, c0c]
+        v01 = dp_f[r0c, c1c]
+        v10 = dp_f[r1c, c0c]
+        v11 = dp_f[r1c, c1c]
+        w00 = (1.0 - dr) * (1.0 - dc)
+        w01 = (1.0 - dr) * dc
+        w10 = dr * (1.0 - dc)
+        w11 = dr * dc
+        polar = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11
+        polar = torch.where(valid, polar, torch.zeros_like(polar))
+
+        # Radial profile: simple mean over theta of the polar image (row-mean).
+        # Out-of-detector wedges contribute zeros — for users who want
+        # angular masking, a dedicated mask trait is a downstream feature.
+        radial = polar.mean(dim=1)
+
+        polar_np = polar.detach().cpu().numpy().astype(np.float32, copy=False)
+        radial_np = radial.detach().cpu().numpy().astype(np.float32, copy=False)
+        with self.hold_sync():
+            self.polar_q_mrad_min = float(q_min)
+            self.polar_q_mrad_max = float(q_max)
+            self.polar_bytes = polar_np.tobytes()
+            self.polar_radial_bytes = radial_np.tobytes()
 
     def _create_circular_mask(self, cx: float, cy: float, radius: float):
         """Create circular mask (boolean tensor on device)."""

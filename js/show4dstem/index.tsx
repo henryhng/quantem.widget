@@ -1068,6 +1068,19 @@ function Show4DSTEM() {
   const [viStats] = useModelState<number[]>("vi_stats");  // [mean, min, max, std]
   const [showFft, setShowFft] = useModelState<boolean>("show_fft");
   const [fftWindow, setFftWindow] = useModelState<boolean>("fft_window");
+  // Polar / azimuthal sub-view state (synced with Python)
+  const [showPolar, setShowPolar] = useModelState<boolean>("show_polar");
+  const [polarQMinMrad, setPolarQMinMrad] = useModelState<number>("polar_q_min_mrad");
+  const [polarQMaxMrad, setPolarQMaxMrad] = useModelState<number>("polar_q_max_mrad");
+  const [polarNQ, setPolarNQ] = useModelState<number>("polar_n_q");
+  const [polarNTheta, setPolarNTheta] = useModelState<number>("polar_n_theta");
+  const [polarEllipseA, setPolarEllipseA] = useModelState<number>("polar_ellipse_a");
+  const [polarEllipseB, setPolarEllipseB] = useModelState<number>("polar_ellipse_b");
+  const [polarEllipseThetaRad, setPolarEllipseThetaRad] = useModelState<number>("polar_ellipse_theta_rad");
+  const [polarBytes] = useModelState<DataView>("polar_bytes");
+  const [polarRadialBytes] = useModelState<DataView>("polar_radial_bytes");
+  const [polarQMradMin] = useModelState<number>("polar_q_mrad_min");
+  const [polarQMradMax] = useModelState<number>("polar_q_mrad_max");
   const [disabledTools, setDisabledTools] = useModelState<string[]>("disabled_tools");
   const [hiddenTools, setHiddenTools] = useModelState<string[]>("hidden_tools");
   const [showControls] = useModelState<boolean>("show_controls");
@@ -1470,11 +1483,17 @@ function Show4DSTEM() {
   const fftOverlayRef = React.useRef<HTMLCanvasElement>(null);
   const fftOffscreenRef = React.useRef<HTMLCanvasElement | null>(null);
   const fftImageDataRef = React.useRef<ImageData | null>(null);
+  // Polar sub-view refs
+  const polarCanvasRef = React.useRef<HTMLCanvasElement>(null);
+  const polarOffscreenRef = React.useRef<HTMLCanvasElement | null>(null);
+  const polarImageDataRef = React.useRef<ImageData | null>(null);
+  const polarRadialCanvasRef = React.useRef<HTMLCanvasElement>(null);
 
   // Offscreen version counters — bump when colormap/data changes, cheap draw effects depend on these
   const [dpOffscreenVersion, setDpOffscreenVersion] = React.useState(0);
   const [viOffscreenVersion, setViOffscreenVersion] = React.useState(0);
   const [fftOffscreenVersion, setFftOffscreenVersion] = React.useState(0);
+  const [polarOffscreenVersion, setPolarOffscreenVersion] = React.useState(0);
 
   // Cached colorbar vmin/vmax — computed in expensive DP effect, reused in UI overlay without recomputing
   const dpColorbarVminRef = React.useRef(0);
@@ -1985,6 +2004,148 @@ function Show4DSTEM() {
   React.useEffect(() => {
     setFftClickInfo(null);
   }, [virtualImageBytes]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Polar / Azimuthal sub-view rendering
+  //   1. Polar (q, theta) image: colormap-render the float32 polar bytes from
+  //      Python (size polar_n_q × polar_n_theta) using the existing dp_colormap
+  //      and DP percentile clipping. q is on the x-axis, theta on the y-axis.
+  //   2. Radial profile: 1D mean-over-theta plot, drawn Show1D-style.
+  // ─────────────────────────────────────────────────────────────────────────
+  React.useEffect(() => {
+    if (!showPolar) return;
+    if (!polarBytes || polarNQ <= 1 || polarNTheta <= 1) return;
+    const expected = polarNQ * polarNTheta * 4;
+    if (polarBytes.byteLength < expected) return;
+    const polar = new Float32Array(polarBytes.buffer, polarBytes.byteOffset, polarNQ * polarNTheta);
+
+    // Apply DP scale transformation for consistency with the DP panel
+    let scaled = polar;
+    if (dpScaleMode === "log") {
+      scaled = new Float32Array(polar.length);
+      for (let i = 0; i < polar.length; i++) scaled[i] = Math.log1p(Math.max(0, polar[i]));
+    } else if (dpScaleMode === "power") {
+      scaled = new Float32Array(polar.length);
+      for (let i = 0; i < polar.length; i++) scaled[i] = Math.pow(Math.max(0, polar[i]), dpPowerExp);
+    }
+
+    const { min: dataMin, max: dataMax } = findDataRange(scaled);
+    const { vmin, vmax } = sliderRange(dataMin, dataMax, dpVminPct, dpVmaxPct);
+    const lut = COLORMAPS[dpColormap] || COLORMAPS.inferno;
+
+    // Image layout: width = n_q (q on x-axis), height = n_theta (theta on y-axis).
+    // Polar bytes from Python are row-major (n_q, n_theta); transpose into a (n_theta, n_q) image.
+    const imgW = polarNQ;
+    const imgH = polarNTheta;
+    const transposed = new Float32Array(imgW * imgH);
+    for (let qi = 0; qi < polarNQ; qi++) {
+      for (let ti = 0; ti < polarNTheta; ti++) {
+        transposed[ti * polarNQ + qi] = scaled[qi * polarNTheta + ti];
+      }
+    }
+
+    let offscreen = polarOffscreenRef.current;
+    if (!offscreen) { offscreen = document.createElement("canvas"); polarOffscreenRef.current = offscreen; }
+    const sizeChanged = offscreen.width !== imgW || offscreen.height !== imgH;
+    if (sizeChanged) {
+      offscreen.width = imgW;
+      offscreen.height = imgH;
+      polarImageDataRef.current = null;
+    }
+    const offCtx = offscreen.getContext("2d");
+    if (!offCtx) return;
+    let imgData = polarImageDataRef.current;
+    if (!imgData) { imgData = offCtx.createImageData(imgW, imgH); polarImageDataRef.current = imgData; }
+    applyColormap(transposed, imgData.data, lut, vmin, vmax);
+    offCtx.putImageData(imgData, 0, 0);
+    setPolarOffscreenVersion(v => v + 1);
+  }, [showPolar, polarBytes, polarNQ, polarNTheta, dpColormap, dpVminPct, dpVmaxPct, dpScaleMode, dpPowerExp]);
+
+  // Draw the (q, theta) polar image to the visible canvas
+  React.useLayoutEffect(() => {
+    const offscreen = polarOffscreenRef.current;
+    if (!offscreen || !polarCanvasRef.current || !showPolar) return;
+    const canvas = polarCanvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(offscreen, 0, 0, canvas.width, canvas.height);
+  }, [polarOffscreenVersion, showPolar]);
+
+  // Draw the 1D radial profile (Show1D-style line plot)
+  React.useEffect(() => {
+    if (!showPolar) return;
+    if (!polarRadialCanvasRef.current) return;
+    if (!polarRadialBytes || polarNQ <= 1) return;
+    const expected = polarNQ * 4;
+    if (polarRadialBytes.byteLength < expected) return;
+    const radial = new Float32Array(polarRadialBytes.buffer, polarRadialBytes.byteOffset, polarNQ);
+
+    const canvas = polarRadialCanvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const dpr = DPR;
+    const cssW = canvas.clientWidth || 240;
+    const cssH = canvas.clientHeight || 90;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+
+    // Find data range
+    let yMin = Infinity, yMax = -Infinity;
+    for (let i = 0; i < radial.length; i++) {
+      const v = radial[i];
+      if (v < yMin) yMin = v;
+      if (v > yMax) yMax = v;
+    }
+    if (!isFinite(yMin) || !isFinite(yMax) || yMax === yMin) { yMin = 0; yMax = 1; }
+
+    const padL = 36, padR = 8, padT = 6, padB = 18;
+    const plotW = Math.max(2, cssW - padL - padR);
+    const plotH = Math.max(2, cssH - padT - padB);
+
+    // Axes
+    ctx.strokeStyle = themeColors.border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, padT);
+    ctx.lineTo(padL, padT + plotH);
+    ctx.lineTo(padL + plotW, padT + plotH);
+    ctx.stroke();
+
+    // Y-tick labels (min and max)
+    ctx.fillStyle = themeColors.textMuted;
+    ctx.font = "10px monospace";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText(formatNumber(yMax), padL - 4, padT);
+    ctx.fillText(formatNumber(yMin), padL - 4, padT + plotH);
+
+    // X-tick labels: q in mrad (or px) at start and end
+    const qLo = polarQMradMin;
+    const qHi = polarQMradMax;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(qLo.toFixed(2), padL, padT + plotH + 3);
+    ctx.textAlign = "right";
+    ctx.fillText(qHi.toFixed(2), padL + plotW, padT + plotH + 3);
+
+    // Line plot
+    ctx.strokeStyle = themeColors.accent;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    for (let i = 0; i < radial.length; i++) {
+      const x = padL + (radial.length === 1 ? 0 : (i / (radial.length - 1)) * plotW);
+      const y = padT + plotH - ((radial[i] - yMin) / (yMax - yMin)) * plotH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }, [showPolar, polarRadialBytes, polarNQ, polarQMradMin, polarQMradMax, themeColors, DPR]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // High-DPI Scale Bar UI Overlays
@@ -3906,6 +4067,8 @@ function Show4DSTEM() {
                   <Switch checked={effectiveShowFft} onChange={(e) => { if (!lockFft) setShowFft(e.target.checked); }} disabled={lockFft} size="small" sx={switchStyles.small} />
                 </>
               )}
+              <Typography sx={{ ...typo.label, fontSize: 10 }}>Polar:</Typography>
+              <Switch checked={showPolar} onChange={(e) => setShowPolar(e.target.checked)} size="small" sx={switchStyles.small} />
               {!hideProfile && (
                 <>
                   <Typography sx={{ ...typo.label, fontSize: 10 }}>Profile:</Typography>
@@ -4195,6 +4358,99 @@ function Show4DSTEM() {
                     )}
                   </Box>
                 )}
+              </Box>
+            )}
+          </Box>
+        )}
+
+        {/* FOURTH COLUMN: Polar (q, theta) sub-view (conditionally shown) */}
+        {showPolar && (
+          <Box sx={{ width: viCanvasWidth }}>
+            {/* Polar Header */}
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: `${SPACING.XS}px`, height: 28 }}>
+              <Typography variant="caption" sx={{ ...typo.label, color: themeColors.textMuted }}>Polar (q, θ)</Typography>
+              <Typography sx={{ ...typo.value, fontSize: 10 }}>
+                q: [{polarQMradMin.toFixed(2)}, {polarQMradMax.toFixed(2)}] {kCalibrated ? "mrad" : "px"}
+              </Typography>
+            </Stack>
+
+            {/* Polar (q, theta) image canvas */}
+            <Box sx={{ ...container.imageBox, width: viCanvasWidth, height: Math.round(viCanvasHeight * 0.55) }}>
+              <canvas ref={polarCanvasRef} width={viCanvasWidth} height={Math.round(viCanvasHeight * 0.55)} style={{ position: "absolute", width: "100%", height: "100%", imageRendering: "pixelated" }} />
+            </Box>
+
+            {/* Radial profile (Show1D-style) */}
+            <Box sx={{ mt: `${SPACING.XS}px`, width: viCanvasWidth, height: Math.round(viCanvasHeight * 0.4), bgcolor: themeColors.bgAlt, border: `1px solid ${themeColors.border}` }}>
+              <canvas ref={polarRadialCanvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+            </Box>
+
+            {/* Polar controls — q range + bin counts */}
+            {showControls && (
+              <Box sx={{ mt: `${SPACING.SM}px`, display: "flex", flexDirection: "column", gap: `${SPACING.XS}px` }}>
+                <Box sx={{ ...controlRow, border: `1px solid ${themeColors.border}`, bgcolor: themeColors.controlBg }}>
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>q_min:</Typography>
+                  <input
+                    type="number"
+                    value={polarQMinMrad}
+                    step={0.1}
+                    min={0}
+                    onChange={(e) => setPolarQMinMrad(parseFloat(e.target.value) || 0)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>q_max:</Typography>
+                  <input
+                    type="number"
+                    value={polarQMaxMrad}
+                    step={0.1}
+                    min={0}
+                    onChange={(e) => setPolarQMaxMrad(parseFloat(e.target.value) || 0)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>n_q:</Typography>
+                  <input
+                    type="number"
+                    value={polarNQ}
+                    step={1}
+                    min={2}
+                    onChange={(e) => setPolarNQ(parseInt(e.target.value) || 2)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>n_θ:</Typography>
+                  <input
+                    type="number"
+                    value={polarNTheta}
+                    step={1}
+                    min={2}
+                    onChange={(e) => setPolarNTheta(parseInt(e.target.value) || 2)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                </Box>
+                <Box sx={{ ...controlRow, border: `1px solid ${themeColors.border}`, bgcolor: themeColors.controlBg }}>
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>Ellipse  a:</Typography>
+                  <input
+                    type="number"
+                    value={polarEllipseA}
+                    step={0.01}
+                    onChange={(e) => setPolarEllipseA(parseFloat(e.target.value) || 1)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>b:</Typography>
+                  <input
+                    type="number"
+                    value={polarEllipseB}
+                    step={0.01}
+                    onChange={(e) => setPolarEllipseB(parseFloat(e.target.value) || 1)}
+                    style={{ width: 50, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                  <Typography sx={{ ...typo.label, fontSize: 10 }}>θ (rad):</Typography>
+                  <input
+                    type="number"
+                    value={polarEllipseThetaRad}
+                    step={0.01}
+                    onChange={(e) => setPolarEllipseThetaRad(parseFloat(e.target.value) || 0)}
+                    style={{ width: 60, fontSize: 10, fontFamily: "monospace", border: `1px solid ${themeColors.border}`, background: themeColors.controlBg, color: themeColors.text, padding: "2px 4px" }}
+                  />
+                </Box>
               </Box>
             )}
           </Box>
