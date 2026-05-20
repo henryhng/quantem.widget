@@ -60,19 +60,39 @@ def test_polar_bytes_shape():
     assert len(w.polar_bytes) == 64 * 90 * 4
 
 
-def test_polar_radial_bytes_shape_and_value():
-    """polar_radial_bytes is polar_n_q × 4 bytes and equals the row-mean
-    (mean over theta) of the polar image."""
-    w, _ = _make_widget()
+def test_polar_radial_bytes_shape_and_unbiased_against_corner_clipping():
+    """polar_radial_bytes is `polar_n_q × 4` bytes and is unbiased even when
+    the polar arc clips the detector at large q. Implemented as
+    `polar.sum(theta) / valid_count(theta)` so out-of-detector wedges do not
+    drag the average down (a plain `polar.mean(axis=1)` would).
+    """
+    # Use a small detector + a polar range that intentionally reaches past the
+    # inscribed circle so some (q, theta) samples land off the detector and
+    # would be zero-clamped by the bilinear-stencil `valid` mask.
+    rng = np.random.default_rng(0)
+    det = 32
+    data = (rng.random((1, 1, det, det), dtype=np.float32) * 100.0 + 1.0)
+    w = Show4DSTEM(data, k_pixel_size=0.5, verbose=False)
+    w.polar_q_min_mrad = 0.0
+    w.polar_q_max_mrad = det * 0.5 * 0.95  # close to the inscribed-circle edge
+    w.polar_n_q = 48
+    w.polar_n_theta = 90
     w.show_polar = True
     assert len(w.polar_radial_bytes) == w.polar_n_q * 4
-
     polar = np.frombuffer(w.polar_bytes, dtype=np.float32).reshape(
         w.polar_n_q, w.polar_n_theta
     )
     radial = np.frombuffer(w.polar_radial_bytes, dtype=np.float32)
-
-    np.testing.assert_allclose(radial, polar.mean(axis=1), rtol=1e-5, atol=1e-5)
+    # On a uniformly-positive DP, the unbiased radial should not collapse
+    # toward zero at large q the way the naive `polar.mean()` does.
+    naive_mean = polar.mean(axis=1)
+    assert radial[-1] > 1.5 * naive_mean[-1] or float(radial[-1]) > 50.0, (
+        "radial profile at largest q is collapsing the way a naive theta-mean "
+        "would (corner-clipped wedges treated as zeros)"
+    )
+    # And for the inner q where every theta is inside the detector, the
+    # unbiased radial must equal the naive mean (valid_count == n_theta).
+    np.testing.assert_allclose(radial[:4], naive_mean[:4], rtol=1e-5, atol=1e-5)
 
 
 def test_polar_ellipse_correction_undistorts_ring_along_major_direction():

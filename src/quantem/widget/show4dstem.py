@@ -4311,10 +4311,13 @@ class Show4DSTEM(anywidget.AnyWidget):
         polar = w00 * v00 + w01 * v01 + w10 * v10 + w11 * v11
         polar = torch.where(valid, polar, torch.zeros_like(polar))
 
-        # Radial profile: simple mean over theta of the polar image (row-mean).
-        # Out-of-detector wedges contribute zeros — for users who want
-        # angular masking, a dedicated mask trait is a downstream feature.
-        radial = polar.mean(dim=1)
+        # Radial profile: mean over theta, divided by the per-q VALID count so
+        # that out-of-detector wedges (e.g. when the polar arc clips the
+        # detector corners at large q) do not bias the average downward. With
+        # raw `.mean()` the q where half the arc is off-detector reports half
+        # the true intensity — that bias propagates into any downstream RDF.
+        valid_count = valid.sum(dim=1).clamp(min=1)
+        radial = polar.sum(dim=1) / valid_count
 
         polar_np = polar.detach().cpu().numpy().astype(np.float32, copy=False)
         radial_np = radial.detach().cpu().numpy().astype(np.float32, copy=False)
