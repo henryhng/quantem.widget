@@ -255,7 +255,10 @@ def detect_bragg_disks_single(
             qy[i] += dy
             qx[i] += dx
     else:  # multicorr — DFT upsampling via quantem primitive
-        up = max(2, int(upsample_factor))
+        # `upsampled_correlation_torch` asserts upsample_factor > 2; clamp to 3
+        # so the user-facing minimum is honored without silently falling back to
+        # pixel coords for the upsample_factor=2 case.
+        up = max(3, int(upsample_factor))
         cc_ft_full = np.fft.fft2(cc)  # use the un-smoothed cc for upsampling
         cc_ft_torch = torch.from_numpy(cc_ft_full)
         for i in range(qy.size):
