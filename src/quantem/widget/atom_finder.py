@@ -78,9 +78,19 @@ def _fit_gaussian_window(
         return None
     sigma_guess = max(0.5, float(initial_sigma))
     p0 = [amp_guess, float(col), float(row), sigma_guess, sigma_guess, 0.0, offset_guess]
-    # Bounds keep the fit centered within the window
-    lower = [0.0, c0 - 0.5, r0 - 0.5, 0.1, 0.1, -np.pi, -np.inf]
-    upper = [np.inf, c1 + 0.5, r1 + 0.5, max(radius * 4, 1.0), max(radius * 4, 1.0), np.pi, np.inf]
+    # Bounds keep the fit centered within the window. When rotation is NOT
+    # enabled we clamp theta to ~0 IN the optimizer (rather than zeroing
+    # post-fit) so the fit cannot drift to a non-zero theta and then leave
+    # spurious (sx ≠ sy) anisotropy behind on a rotationally-symmetric column.
+    if rotation_enabled:
+        theta_lo, theta_hi = -np.pi, np.pi
+    else:
+        theta_lo, theta_hi = -1e-6, 1e-6
+    lower = [0.0, c0 - 0.5, r0 - 0.5, 0.1, 0.1, theta_lo, -np.inf]
+    upper = [np.inf, c1 + 0.5, r1 + 0.5, max(radius * 4, 1.0), max(radius * 4, 1.0), theta_hi, np.inf]
+    # `maxfev=1000` matches py4DSTEM / atomap defaults and scipy's auto value
+    # (100·(N+1)=800 for 7 params); the previous 200 silently dropped crowded
+    # fits via the bare `except Exception` below.
     try:
         popt, _ = curve_fit(
             _gaussian_2d,
@@ -88,12 +98,13 @@ def _fit_gaussian_window(
             window.ravel(),
             p0=p0,
             bounds=(lower, upper),
-            maxfev=200,
+            maxfev=1000,
         )
     except Exception:
         return None
     amp, x0_f, y0_f, sx, sy, theta, _offset = popt
     if not rotation_enabled:
+        # Bounded to ~0 above; force exactly 0 for the returned record.
         theta = 0.0
     # Reject runaway fits (center wandered outside window)
     if not (c0 - 1 <= x0_f <= c1 + 1 and r0 - 1 <= y0_f <= r1 + 1):
