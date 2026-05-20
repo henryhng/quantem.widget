@@ -11,6 +11,7 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "unknown"
 
 if TYPE_CHECKING:  # pragma: no cover
+    from quantem.widget.aberration_explorer import AberrationExplorer
     from quantem.widget.align2d import Align2D
     from quantem.widget.align2d_bulk import Align2DBulk
     from quantem.widget.array_utils import bin2d
@@ -34,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 _EXPORTS = {
+    "AberrationExplorer": ("quantem.widget.aberration_explorer", "AberrationExplorer"),
     "Align2D": ("quantem.widget.align2d", "Align2D"),
     "Align2DBulk": ("quantem.widget.align2d_bulk", "Align2DBulk"),
     "bin2d": ("quantem.widget.array_utils", "bin2d"),
@@ -75,6 +77,7 @@ def __dir__() -> list[str]:
     return sorted(list(globals().keys()) + list(_EXPORTS.keys()))
 
 __all__ = [
+    "AberrationExplorer",
     "Align2D",
     "Align2DBulk",
     "bin2d",

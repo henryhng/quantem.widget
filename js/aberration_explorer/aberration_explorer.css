@@ -1,0 +1,9 @@
+/* aberration_explorer.css - Minimal CSS for AberrationExplorer */
+
+.aberration-explorer-root {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.aberration-explorer-root canvas {
+  display: block;
+}
