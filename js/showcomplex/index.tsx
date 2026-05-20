@@ -28,6 +28,7 @@ import { computeHistogramFromBytes } from "../histogram";
 import { findDataRange, applyLogScale, percentileClip, sliderRange } from "../stats";
 import { getWebGPUFFT, WebGPUFFT, fft2d, fftshift, computeMagnitude, autoEnhanceFFT, nextPow2, applyHannWindow2D } from "../webgpu-fft";
 import { COLORMAPS, COLORMAP_NAMES, applyColormap, renderToOffscreen } from "../colormaps";
+import { JCH_PHASE_WHEEL } from "../colormap-data";
 import { ControlCustomizer } from "../control-customizer";
 import { computeToolVisibility } from "../tool-parity";
 import "./showcomplex.css";
@@ -152,6 +153,15 @@ type DisplayMode = "amplitude" | "phase" | "hsv" | "real" | "imag";
 // HSV rendering
 // ============================================================================
 
+/**
+ * Render a complex field as a "domain coloring" image: phase → hue, amplitude →
+ * lightness. Uses quantem's perceptually-uniform JCh phase wheel
+ * (`JCH_PHASE_WHEEL`, generated from `array_to_rgba`) instead of naive HSV, so
+ * the live canvas matches quantem's `array_to_rgba` exactly on the colorwheel
+ * and approximately on the field. Amplitude is applied as a linear RGB scale of
+ * the full-lightness wheel color — a deliberate, recommended approximation of
+ * JCh lightness scaling that keeps rendering a single LUT lookup per pixel.
+ */
 function renderHSV(
   real: Float32Array, imag: Float32Array,
   rgba: Uint8ClampedArray,
@@ -159,28 +169,18 @@ function renderHSV(
 ): void {
   const ampRange = ampMax > ampMin ? ampMax - ampMin : 1;
   for (let i = 0; i < real.length; i++) {
-    const phase = Math.atan2(imag[i], real[i]);
+    const phase = Math.atan2(imag[i], real[i]); // [-pi, pi]
     const amp = Math.sqrt(real[i] * real[i] + imag[i] * imag[i]);
-    const h = (phase + Math.PI) / (2 * Math.PI); // [0, 1]
     const v = Math.max(0, Math.min(1, (amp - ampMin) / ampRange));
-    // HSV→RGB with S=1
-    const hi = Math.floor(h * 6) % 6;
-    const f = h * 6 - Math.floor(h * 6);
-    const q = v * (1 - f);
-    const t = v * f;
-    let r: number, g: number, b: number;
-    switch (hi) {
-      case 0: r = v; g = t; b = 0; break;
-      case 1: r = q; g = v; b = 0; break;
-      case 2: r = 0; g = v; b = t; break;
-      case 3: r = 0; g = q; b = v; break;
-      case 4: r = t; g = 0; b = v; break;
-      default: r = v; g = 0; b = q; break;
-    }
+    // Map phase [-pi, pi) → cyclic LUT index [0, 256).
+    let hueIndex = Math.floor(((phase + Math.PI) / (2 * Math.PI)) * 256);
+    if (hueIndex < 0) hueIndex = 0;
+    else if (hueIndex > 255) hueIndex = 255;
+    const k = hueIndex * 3;
     const j = i * 4;
-    rgba[j] = r * 255;
-    rgba[j + 1] = g * 255;
-    rgba[j + 2] = b * 255;
+    rgba[j] = JCH_PHASE_WHEEL[k] * v;
+    rgba[j + 1] = JCH_PHASE_WHEEL[k + 1] * v;
+    rgba[j + 2] = JCH_PHASE_WHEEL[k + 2] * v;
     rgba[j + 3] = 255;
   }
 }
@@ -194,25 +194,22 @@ function drawPhaseColorwheel(
   cx: number, cy: number,
   radius: number,
 ): void {
-  // Draw filled circle with hue sweep
+  // Draw filled circle with the perceptually-uniform JCh phase wheel — the
+  // exact same LUT renderHSV uses, so the wheel matches quantem's
+  // array_to_rgba. Canvas arc angle θ (clockwise from +x) corresponds to
+  // phase = atan2(sin θ, cos θ) = θ wrapped to (-pi, pi]; the LUT index is
+  // (phase + pi) / 2pi * 256.
   for (let angle = 0; angle < 360; angle += 1) {
     const rad = (angle * Math.PI) / 180;
     const rad2 = ((angle + 2) * Math.PI) / 180;
-    // phase = angle mapped to [-pi, pi] → hue
-    const h = angle / 360;
-    const hi = Math.floor(h * 6) % 6;
-    const f = h * 6 - Math.floor(h * 6);
-    const q = 1 - f;
-    let r: number, g: number, b: number;
-    switch (hi) {
-      case 0: r = 1; g = f; b = 0; break;
-      case 1: r = q; g = 1; b = 0; break;
-      case 2: r = 0; g = 1; b = f; break;
-      case 3: r = 0; g = q; b = 1; break;
-      case 4: r = f; g = 0; b = 1; break;
-      default: r = 1; g = 0; b = q; break;
-    }
-    ctx.fillStyle = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+    // Phase at the segment midpoint, wrapped to [-pi, pi).
+    let phase = ((angle + 1) * Math.PI) / 180;
+    if (phase >= Math.PI) phase -= 2 * Math.PI;
+    let hueIndex = Math.floor(((phase + Math.PI) / (2 * Math.PI)) * 256);
+    if (hueIndex < 0) hueIndex = 0;
+    else if (hueIndex > 255) hueIndex = 255;
+    const k = hueIndex * 3;
+    ctx.fillStyle = `rgb(${JCH_PHASE_WHEEL[k]},${JCH_PHASE_WHEEL[k + 1]},${JCH_PHASE_WHEEL[k + 2]})`;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.arc(cx, cy, radius, rad, rad2);
