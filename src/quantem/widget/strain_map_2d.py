@@ -4,18 +4,27 @@ strain_map_2d: Interactive 2D strain map widget for 4D-STEM Bragg peak data.
 Given per-scan-pixel Bragg peak positions (qy, qx) in detector pixels, fits
 reference lattice vectors (g1, g2) from a user-selected strain-free ROI and
 computes a per-pixel strain tensor (e_xx, e_yy, e_xy) and rigid rotation
-(theta) following the Hytch-style convention used by py4DSTEM:
+(theta) following the Hytch-style convention used by py4DSTEM
+(``py4DSTEM.process.strain.latticevectors.get_strain_from_reference_g1g2``):
 
-    F = G_ref @ inv(G_local)
-    eps = 0.5 * (F + F.T) - I
-    theta = 0.5 * (F[1,0] - F[0,1])
+    M_rows  = [g1; g2]   (reference, in (qx, qy) frame)
+    A_rows  = [g1; g2]   (per-pixel local)
+    beta    = lstsq(M_rows, A_rows).T
+
+    e_xx  = 1 - beta[0, 0]              # strain along reference g1
+    e_yy  = 1 - beta[1, 1]              # strain along reference g2
+    e_xy  = -0.5 * (beta[0, 1] + beta[1, 0])
+    theta = 0.5 * (beta[0, 1] - beta[1, 0])    # CCW positive (radians)
 
 Conventions:
-- Input peak coordinates are (qy_px, qx_px) — (row, col) in detector pixel space.
+- Input peak coordinates are (qy_px, qx_px) — (row, col) in detector pixel
+  space. ``compute_strain`` internally swaps to (qx, qy) before the LS so the
+  formula above matches py4DSTEM bit-for-bit.
 - g1 / g2 are stored as length-2 lists [qy, qx] in detector pixels.
-- Extensive strain is positive; rotation is CCW positive in radians.
+- Extensive real-space strain is positive; rotation is CCW positive (rad).
 - This widget does NOT detect Bragg peaks. Provide the peak array yourself
-  (e.g., from py4DSTEM or another disk-detection pipeline).
+  (e.g. from py4DSTEM, the feat/show4dstem-bragg widget branch, or any
+  disk-detection pipeline).
 """
 
 import json

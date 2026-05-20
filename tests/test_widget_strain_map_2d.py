@@ -149,11 +149,12 @@ def test_strain_map_2d_pure_rotation():
     w = StrainMap2D(peaks, ref_roi={"top": 0, "left": 0, "bottom": R_Nx, "right": 2})
     rotated_theta = w._theta[:, 2:]
     assert np.isfinite(rotated_theta).all()
-    # Pure rotation: F = R(theta); beta[0,1] = -sin(theta), beta[1,0] = sin(theta)
-    # → 0.5 * (beta[0,1] - beta[1,0]) = -sin(theta) ≈ -0.05
-    # The recovered theta has the same magnitude; allow sign as a convention
-    # choice. We test |theta| ≈ 0.05.
-    assert np.allclose(np.abs(rotated_theta), 0.05, atol=1e-3)
+    # Pure rotation R(+θ) applied to G_local gives F = G_ref⁻¹·G_local = R(θ),
+    # so beta = lstsq(M_rows, A_rows).T has beta[0,1] = -sin θ, beta[1,0] = sin θ,
+    # and the widget's `0.5·(beta[0,1] - beta[1,0])` evaluates to -sin θ ≈ -0.05.
+    # The sign is intentionally locked: positive `theta` in the widget output
+    # corresponds to the inverse rotation. (Documented in the module docstring.)
+    assert np.allclose(rotated_theta, -0.05, atol=1e-3)
     # Strain channels carry a second-order residual ~ (1 - cos θ) ≈ θ²/2
     # ≈ 1.25e-3 for θ=0.05. Allow up to 2e-3 to accommodate this geometric
     # nonlinearity of the linearized strain decomposition.
