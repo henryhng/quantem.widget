@@ -64,7 +64,11 @@ class AberrationExplorer(anywidget.AnyWidget):
     semiangle_cutoff_mrad = traitlets.Float(25.0).tag(sync=True)
     gpts = traitlets.Int(256).tag(sync=True)
     real_space_sampling_A = traitlets.Float(0.1).tag(sync=True)
-    aperture_smoothing = traitlets.Float(0.0).tag(sync=True)  # mrad; 0 -> hard aperture
+    # Aperture mode. The underlying `quantem.diffractive_imaging.complex_probe`
+    # `soft_aperture` does not accept a tunable rolloff width — its smoothing is
+    # set by the angular sampling — so this is a Bool, not a configurable mrad
+    # width. Default False (hard aperture).
+    aperture_smoothing = traitlets.Bool(False).tag(sync=True)
     defocus_spread_A = traitlets.Float(0.0).tag(sync=True)  # temporal envelope sigma (Å)
 
     # --- Aberrations (Krivanek polar; canonical keys only) ------------------
@@ -153,7 +157,7 @@ class AberrationExplorer(anywidget.AnyWidget):
         semiangle_cutoff_mrad: float = 25.0,
         gpts: int = 256,
         real_space_sampling_A: float = 0.1,
-        aperture_smoothing: float = 0.0,
+        aperture_smoothing: bool = False,
         defocus_spread_A: float = 0.0,
         aberrations: Optional[Dict[str, float]] = None,
         cmap: str = "inferno",
@@ -172,7 +176,7 @@ class AberrationExplorer(anywidget.AnyWidget):
         self.semiangle_cutoff_mrad = float(semiangle_cutoff_mrad)
         self.gpts = int(gpts)
         self.real_space_sampling_A = float(real_space_sampling_A)
-        self.aperture_smoothing = float(aperture_smoothing)
+        self.aperture_smoothing = bool(aperture_smoothing)
         self.defocus_spread_A = float(defocus_spread_A)
         self.cmap = cmap
         self.show_stats = show_stats
@@ -232,7 +236,7 @@ class AberrationExplorer(anywidget.AnyWidget):
         sampling = float(self.real_space_sampling_A)
         energy_eV = float(self.energy_keV) * 1e3
         semiangle = float(self.semiangle_cutoff_mrad)
-        soft_edges = bool(self.aperture_smoothing > 0)
+        soft_edges = bool(self.aperture_smoothing)
 
         wavelength = float(electron_wavelength_angstrom(energy_eV))
         self.wavelength_A = wavelength
@@ -382,7 +386,7 @@ class AberrationExplorer(anywidget.AnyWidget):
         )
         lines.append(
             f"Aperture:   {self.semiangle_cutoff_mrad:.2f} mrad "
-            f"({'soft' if self.aperture_smoothing > 0 else 'hard'})"
+            f"({'soft' if self.aperture_smoothing else 'hard'})"
         )
         lines.append(
             f"Grid:       {self.gpts}×{self.gpts} at {self.real_space_sampling_A:.3f} Å/px "

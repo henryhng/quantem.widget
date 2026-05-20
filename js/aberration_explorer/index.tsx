@@ -692,7 +692,7 @@ function AberrationExplorer() {
   const [semiangle, setSemiangle] = useModelState<number>("semiangle_cutoff_mrad");
   const [gpts, setGpts] = useModelState<number>("gpts");
   const [sampling, setSampling] = useModelState<number>("real_space_sampling_A");
-  const [apertureSmoothing, setApertureSmoothing] = useModelState<number>("aperture_smoothing");
+  const [apertureSmoothing, setApertureSmoothing] = useModelState<boolean>("aperture_smoothing");
   const [defocusSpread, setDefocusSpread] = useModelState<number>("defocus_spread_A");
   const [aberrationsModel, setAberrationsModel] =
     useModelState<Record<string, number>>("aberrations");
@@ -1295,8 +1295,8 @@ function AberrationExplorer() {
 
             <Typography sx={{ ...typography.label, fontSize: 10 }}>Soft ap.:</Typography>
             <Switch
-              checked={apertureSmoothing > 0}
-              onChange={(e) => setApertureSmoothing(e.target.checked ? 1.0 : 0.0)}
+              checked={Boolean(apertureSmoothing)}
+              onChange={(e) => setApertureSmoothing(e.target.checked)}
               size="small"
               sx={switchStyles.small}
             />
