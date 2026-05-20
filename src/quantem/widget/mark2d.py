@@ -13,7 +13,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy, _resize_image
+from quantem.widget.array_utils import to_numpy, _resize_image, extract_dataset_meta
 from quantem.widget.io import IOResult
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
@@ -640,13 +640,14 @@ class Mark2D(anywidget.AnyWidget):
         self.percentile_high = percentile_high
         # Check if data is an IOResult and extract metadata
         if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size == 0.0 and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            if labels is None and data.labels:
-                labels = data.labels
-            data = data.data
+            m = extract_dataset_meta(data)
+            if not title and m.title:
+                title = m.title
+            if pixel_size == 0.0 and m.pixel_size is not None:
+                pixel_size = m.pixel_size
+            if labels is None and m.labels:
+                labels = m.labels
+            data = m.array
         self._set_data(data, labels)
         # Explicit overrides take priority over Dataset metadata
         if title:
@@ -668,16 +669,12 @@ class Mark2D(anywidget.AnyWidget):
     def _set_data(self, data, labels=None):
         # Check if data is a Dataset2d and extract metadata
         if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            if data.name:
-                self.title = data.name
-            if hasattr(data, "units"):
-                units = list(data.units)
-                sampling_val = float(data.sampling[-1])
-                if units[-1] in ("nm",):
-                    self.pixel_size = sampling_val * 10  # nm → Å
-                elif units[-1] in ("Å", "angstrom", "A"):
-                    self.pixel_size = sampling_val
-            data = data.array
+            m = extract_dataset_meta(data, sampling_axis=-1)
+            if m.title:
+                self.title = m.title
+            if m.pixel_size is not None:
+                self.pixel_size = m.pixel_size
+            data = m.array
 
         if isinstance(data, list):
             images = [to_numpy(d) for d in data]

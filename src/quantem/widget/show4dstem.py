@@ -39,7 +39,7 @@ import torch
 import traitlets
 
 from quantem.core.config import validate_device
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import extract_dataset_meta, to_numpy
 from quantem.widget.io import IOResult, _format_memory
 from quantem.widget.json_state import (
     build_json_header,
@@ -440,11 +440,12 @@ class Show4DSTEM(anywidget.AnyWidget):
         # Check if data is an IOResult and extract metadata
         _io_labels = None
         if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if data.labels:
-                _io_labels = data.labels
-            data = data.data
+            m = extract_dataset_meta(data)
+            if not title and m.title:
+                title = m.title
+            if m.labels:
+                _io_labels = m.labels
+            data = m.array
 
         # Extract calibration from Dataset4dstem if provided
         k_calibrated = False

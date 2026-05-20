@@ -1854,54 +1854,6 @@ class Bin4D(anywidget.AnyWidget):
         adf = torch.tensordot(data4d, adf_mask, dims=([2, 3], [0, 1]))
         return bf, adf
 
-    def _bin_axis_torch(self, data, axis: int, factor: int, mode: str, edge: str):
-        """Torch equivalent of `_bin_axis`."""
-        if factor == 1:
-            return data
-
-        n = int(data.shape[axis])
-
-        if edge == "crop":
-            n_used = (n // factor) * factor
-            if n_used <= 0:
-                raise ValueError(
-                    f"crop mode: factor {factor} is larger than axis size {n} for axis {axis}"
-                )
-            trimmed = data.narrow(axis, 0, n_used)
-        elif edge == "pad":
-            n_used = int(math.ceil(n / factor) * factor)
-            pad_amount = n_used - n
-            if pad_amount > 0:
-                pad_shape = list(data.shape)
-                pad_shape[axis] = pad_amount
-                pad_block = torch.zeros(
-                    pad_shape,
-                    dtype=data.dtype,
-                    device=data.device,
-                )
-                trimmed = torch.cat([data, pad_block], dim=axis)
-            else:
-                trimmed = data
-        else:  # edge == "error"
-            if n % factor != 0:
-                raise ValueError(
-                    f"error mode: axis size {n} is not divisible by factor {factor} (axis {axis})"
-                )
-            n_used = n
-            trimmed = data
-
-        new_shape = (
-            tuple(trimmed.shape[:axis])
-            + (n_used // factor, factor)
-            + tuple(trimmed.shape[axis + 1 :])
-        )
-        reshaped = trimmed.reshape(new_shape)
-        reduce_axis = axis + 1
-
-        if mode == "sum":
-            return reshaped.sum(dim=reduce_axis)
-        return reshaped.mean(dim=reduce_axis)
-
     def _bin_4d_torch(
         self,
         data4d,
@@ -1911,7 +1863,7 @@ class Bin4D(anywidget.AnyWidget):
     ):
         out = data4d
         for axis, factor in enumerate(factors):
-            out = self._bin_axis_torch(out, axis=axis, factor=int(factor), mode=mode, edge=edge)
+            out = _bin_axis_standalone(out, axis=axis, factor=int(factor), mode=mode, edge=edge)
         return out.float()
 
     # ------------------------------------------------------------------

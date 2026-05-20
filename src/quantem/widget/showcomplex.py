@@ -13,7 +13,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import compute_stats, extract_dataset_meta, normalize_frame, to_numpy
 from quantem.widget.io import IOResult
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
@@ -239,25 +239,21 @@ class ShowComplex2D(anywidget.AnyWidget):
 
         # Check if data is an IOResult and extract metadata
         if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size == 0.0 and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            data = data.data
+            m = extract_dataset_meta(data, sampling_axis=-1)
+            if m.title:
+                title = m.title
+            if m.pixel_size:
+                pixel_size = m.pixel_size
+            data = m.array
 
         # Dataset duck typing
         _extracted_title = None
         _extracted_pixel_size = None
         if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            _extracted_title = data.name if data.name else None
-            if hasattr(data, "units"):
-                units = list(data.units)
-                sampling_val = float(data.sampling[-1])
-                if units[-1] in ("nm",):
-                    _extracted_pixel_size = sampling_val * 10  # nm → Å
-                elif units[-1] in ("Å", "angstrom", "A"):
-                    _extracted_pixel_size = sampling_val
-            data = data.array
+            m = extract_dataset_meta(data, sampling_axis=-1)
+            _extracted_title = m.title
+            _extracted_pixel_size = m.pixel_size
+            data = m.array
 
         # Handle (real, imag) tuple input
         if isinstance(data, tuple) and len(data) == 2:
@@ -377,10 +373,11 @@ class ShowComplex2D(anywidget.AnyWidget):
 
     def _update_stats(self):
         data = self._get_display_data()
-        self.stats_mean = float(data.mean())
-        self.stats_min = float(data.min())
-        self.stats_max = float(data.max())
-        self.stats_std = float(data.std())
+        s = compute_stats(data)
+        self.stats_mean = s["mean"]
+        self.stats_min = s["min"]
+        self.stats_max = s["max"]
+        self.stats_std = s["std"]
 
     def _on_display_mode_change(self, change=None):
         self._update_stats()
@@ -425,8 +422,7 @@ class ShowComplex2D(anywidget.AnyWidget):
 
     def set_image(self, data):
         """Replace the complex data. Preserves all display settings."""
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            data = data.array
+        data = extract_dataset_meta(data).array
         if isinstance(data, tuple) and len(data) == 2:
             real_arr = to_numpy(data[0]).astype(np.float32)
             imag_arr = to_numpy(data[1]).astype(np.float32)
@@ -460,23 +456,15 @@ class ShowComplex2D(anywidget.AnyWidget):
     # =========================================================================
 
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
-        if self.log_scale:
-            frame = np.log1p(np.maximum(frame, 0))
-        if self.vmin is not None and self.vmax is not None:
-            vmin = float(self.vmin)
-            vmax = float(self.vmax)
-            if self.log_scale:
-                vmin = float(np.log1p(max(vmin, 0)))
-                vmax = float(np.log1p(max(vmax, 0)))
-        elif self.auto_contrast:
-            vmin = float(np.percentile(frame, self.percentile_low))
-            vmax = float(np.percentile(frame, self.percentile_high))
-        else:
-            vmin = float(frame.min())
-            vmax = float(frame.max())
-        if vmax > vmin:
-            return np.clip((frame - vmin) / (vmax - vmin) * 255, 0, 255).astype(np.uint8)
-        return np.zeros(frame.shape, dtype=np.uint8)
+        return normalize_frame(
+            frame,
+            log_scale=self.log_scale,
+            vmin=self.vmin,
+            vmax=self.vmax,
+            auto_contrast=self.auto_contrast,
+            plo=self.percentile_low,
+            phi=self.percentile_high,
+        )
 
     def save_image(
         self,

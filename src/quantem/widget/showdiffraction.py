@@ -17,7 +17,7 @@ import numpy as np
 import torch
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import extract_dataset_meta, to_numpy
 from quantem.widget.io import IOResult
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
@@ -243,11 +243,12 @@ class ShowDiffraction(anywidget.AnyWidget):
 
         # ── Extract metadata from IOResult ───────────────────────────────
         if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size is None and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            data = data.data
+            m = extract_dataset_meta(data)
+            if not title and m.title:
+                title = m.title
+            if pixel_size is None and m.pixel_size is not None:
+                pixel_size = m.pixel_size
+            data = m.array
 
         # ── Dataset duck typing ──────────────────────────────────────────
         k_calibrated = False
@@ -595,11 +596,12 @@ class ShowDiffraction(anywidget.AnyWidget):
     def set_image(self, data, scan_shape: tuple[int, int] | None = None) -> Self:
         """Replace data. Preserves display settings, clears spots."""
         if isinstance(data, IOResult):
-            if data.pixel_size is not None:
-                self.pixel_size = float(data.pixel_size)
-            if data.title:
-                self.title = data.title
-            data = data.data
+            m = extract_dataset_meta(data)
+            if m.pixel_size is not None:
+                self.pixel_size = float(m.pixel_size)
+            if m.title:
+                self.title = m.title
+            data = m.array
         if hasattr(data, "sampling") and hasattr(data, "array"):
             units = getattr(data, "units", ["pixels"] * 4)
             if units[0] in ("Å", "angstrom", "A", "nm"):

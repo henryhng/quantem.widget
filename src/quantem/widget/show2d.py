@@ -22,8 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy, _resize_image
-from quantem.widget.io import IO, IOResult
+from quantem.widget.array_utils import to_numpy, _resize_image, extract_dataset_meta, normalize_frame
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
     bind_tool_runtime_api,
@@ -439,28 +438,15 @@ class Show2D(anywidget.AnyWidget):
         self._display_data = None  # initialized after data setup
         self._display_bin = 1
 
-        # Check if data is an IOResult and extract metadata
-        if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size == 0.0 and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            if labels is None and data.labels:
-                labels = data.labels
-            data = data.data
-
-        # Check if data is a Dataset2d and extract metadata
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            if not title and data.name:
-                title = data.name
-            if pixel_size == 0.0 and hasattr(data, "units"):
-                units = list(data.units)
-                sampling_val = float(data.sampling[-1])
-                if units[-1] in ("nm",):
-                    pixel_size = sampling_val * 10  # nm → Å
-                elif units[-1] in ("Å", "angstrom", "A"):
-                    pixel_size = sampling_val
-            data = data.array
+        # Extract metadata from an IOResult or quantem Dataset2d (duck-typed).
+        m = extract_dataset_meta(data, sampling_axis=-1)
+        if not title and m.title:
+            title = m.title
+        if pixel_size == 0.0 and m.pixel_size is not None:
+            pixel_size = m.pixel_size
+        if labels is None and m.labels:
+            labels = m.labels
+        data = m.array
 
         # Convert input to NumPy (handles NumPy, CuPy, PyTorch)
         if isinstance(data, list):
@@ -782,24 +768,15 @@ class Show2D(anywidget.AnyWidget):
         return data_dict
 
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
-        if self.log_scale:
-            frame = np.log1p(np.maximum(frame, 0))
-        if self.vmin is not None and self.vmax is not None:
-            vmin = float(self.vmin)
-            vmax = float(self.vmax)
-            if self.log_scale:
-                vmin = float(np.log1p(max(vmin, 0)))
-                vmax = float(np.log1p(max(vmax, 0)))
-        elif self.auto_contrast:
-            vmin = float(np.percentile(frame, 2))
-            vmax = float(np.percentile(frame, 98))
-        else:
-            vmin = float(frame.min())
-            vmax = float(frame.max())
-        if vmax > vmin:
-            normalized = np.clip((frame - vmin) / (vmax - vmin) * 255, 0, 255)
-            return normalized.astype(np.uint8)
-        return np.zeros(frame.shape, dtype=np.uint8)
+        return normalize_frame(
+            frame,
+            log_scale=self.log_scale,
+            vmin=self.vmin,
+            vmax=self.vmax,
+            auto_contrast=self.auto_contrast,
+            plo=2.0,
+            phi=98.0,
+        )
 
     def save_image(
         self,

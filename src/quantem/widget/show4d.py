@@ -15,7 +15,7 @@ import numpy as np
 import anywidget
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import compute_stats, extract_dataset_meta, normalize_frame, to_numpy
 from quantem.widget.io import IOResult
 from quantem.widget.json_state import build_json_header, resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
@@ -323,9 +323,10 @@ class Show4D(anywidget.AnyWidget):
 
         # Check if data is an IOResult and extract metadata
         if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            data = data.data
+            m = extract_dataset_meta(data)
+            if not title and m.title:
+                title = m.title
+            data = m.array
 
         # Dataset duck typing
         if hasattr(data, "array") and hasattr(data, "sampling"):
@@ -467,10 +468,7 @@ class Show4D(anywidget.AnyWidget):
         self.nav_data_min = float(nav_img.min())
         self.nav_data_max = float(nav_img.max())
         self.nav_image_bytes = nav_img.tobytes()
-        self.nav_stats = [
-            float(nav_img.mean()), float(nav_img.min()),
-            float(nav_img.max()), float(nav_img.std()),
-        ]
+        self.nav_stats = list(compute_stats(nav_img).values())
 
         # Initial position at center
         self.pos_row = self.nav_rows // 2
@@ -789,23 +787,15 @@ class Show4D(anywidget.AnyWidget):
     # ── Export (GIF) ──────────────────────────────────────────────────────────
 
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
-        if self.log_scale:
-            frame = np.log1p(np.maximum(frame, 0))
-        if self.sig_vmin is not None and self.sig_vmax is not None:
-            fmin = float(self.sig_vmin)
-            fmax = float(self.sig_vmax)
-            if self.log_scale:
-                fmin = float(np.log1p(max(fmin, 0)))
-                fmax = float(np.log1p(max(fmax, 0)))
-        elif self.auto_contrast:
-            fmin = float(np.percentile(frame, self.percentile_low))
-            fmax = float(np.percentile(frame, self.percentile_high))
-        else:
-            fmin = float(frame.min())
-            fmax = float(frame.max())
-        if fmax > fmin:
-            return np.clip((frame - fmin) / (fmax - fmin) * 255, 0, 255).astype(np.uint8)
-        return np.zeros(frame.shape, dtype=np.uint8)
+        return normalize_frame(
+            frame,
+            log_scale=self.log_scale,
+            vmin=self.sig_vmin,
+            vmax=self.sig_vmax,
+            auto_contrast=self.auto_contrast,
+            plo=self.percentile_low,
+            phi=self.percentile_high,
+        )
 
     def _on_gif_export(self, change=None):
         if not self._gif_export_requested:
@@ -966,10 +956,7 @@ class Show4D(anywidget.AnyWidget):
             frame = self._data[self.pos_row, self.pos_col]
         frame = np.asarray(frame, dtype=np.float32)
         with self.hold_sync():
-            self.sig_stats = [
-                float(frame.mean()), float(frame.min()),
-                float(frame.max()), float(frame.std()),
-            ]
+            self.sig_stats = list(compute_stats(frame).values())
             self.frame_bytes = frame.tobytes()
 
     def _on_roi_change(self, change=None):

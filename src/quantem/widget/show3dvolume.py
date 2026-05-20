@@ -10,8 +10,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
-from quantem.widget.io import IOResult
+from quantem.widget.array_utils import extract_dataset_meta, to_numpy
 from quantem.widget.json_state import build_json_header, resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
     bind_tool_runtime_api,
@@ -247,26 +246,13 @@ class Show3DVolume(anywidget.AnyWidget):
         if dim_labels is not None:
             self.dim_labels = dim_labels
 
-        # Check if data is an IOResult and extract metadata
-        if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size == 0.0 and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            data = data.data
-
-        # Check if data is a Dataset3d and extract metadata
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            if not title and data.name:
-                title = data.name
-            if pixel_size == 0.0 and hasattr(data, "units"):
-                units = list(data.units)
-                sampling_val = float(data.sampling[-1])
-                if units[-1] in ("nm",):
-                    pixel_size = sampling_val * 10  # nm → Å
-                elif units[-1] in ("Å", "angstrom", "A"):
-                    pixel_size = sampling_val
-            data = data.array
+        # Check if data is an IOResult or Dataset3d and extract metadata
+        m = extract_dataset_meta(data, sampling_axis=-1)
+        if not title and m.title:
+            title = m.title
+        if pixel_size == 0.0 and m.pixel_size is not None:
+            pixel_size = m.pixel_size
+        data = m.array
 
         data = to_numpy(data)
         if data.ndim != 3:
@@ -319,14 +305,10 @@ class Show3DVolume(anywidget.AnyWidget):
         # Volume B (dual comparison mode)
         self._data_b: np.ndarray | None = None
         if data_b is not None:
-            if isinstance(data_b, IOResult):
-                if not title_b and data_b.title:
-                    title_b = data_b.title
-                data_b = data_b.data
-            if hasattr(data_b, "array") and hasattr(data_b, "name") and hasattr(data_b, "sampling"):
-                if not title_b and data_b.name:
-                    title_b = data_b.name
-                data_b = data_b.array
+            m = extract_dataset_meta(data_b)
+            if not title_b and m.title:
+                title_b = m.title
+            data_b = m.array
             data_b = to_numpy(data_b)
             if data_b.ndim != 3:
                 raise ValueError(f"data_b must be 3D, got {data_b.ndim}D")
@@ -368,8 +350,7 @@ class Show3DVolume(anywidget.AnyWidget):
             provided and dual mode is active, volume B is dropped when
             the new data shape differs from the old B shape.
         """
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            data = data.array
+        data = extract_dataset_meta(data).array
         data = to_numpy(data)
         if data.ndim != 3:
             raise ValueError(f"Show3DVolume requires 3D data, got {data.ndim}D")
@@ -379,8 +360,7 @@ class Show3DVolume(anywidget.AnyWidget):
         self.slice_y = min(self.slice_y, self.ny - 1)
         self.slice_x = min(self.slice_x, self.nx - 1)
         if data_b is not None:
-            if hasattr(data_b, "array") and hasattr(data_b, "name") and hasattr(data_b, "sampling"):
-                data_b = data_b.array
+            data_b = extract_dataset_meta(data_b).array
             data_b = to_numpy(data_b)
             if data_b.ndim != 3:
                 raise ValueError(f"data_b must be 3D, got {data_b.ndim}D")

@@ -16,7 +16,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import bin2d, to_numpy
+from quantem.widget.array_utils import bin2d, to_numpy, extract_dataset_meta
 from quantem.widget.io import IOResult
 from quantem.widget.json_state import build_json_header, resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
@@ -212,13 +212,14 @@ class Bin2D(anywidget.AnyWidget):
         extracted_title = None
 
         if isinstance(data, IOResult):
-            if data.title:
-                extracted_title = data.title
-            if data.pixel_size:
-                extracted_pixel_size = data.pixel_size
-            if data.labels and labels is None:
-                labels = data.labels
-            data = data.data
+            m = extract_dataset_meta(data)
+            if m.title:
+                extracted_title = m.title
+            if m.pixel_size:
+                extracted_pixel_size = m.pixel_size
+            if m.labels and labels is None:
+                labels = m.labels
+            data = m.array
 
         if hasattr(data, "data") and hasattr(data, "pixel_size"):
             ds = data

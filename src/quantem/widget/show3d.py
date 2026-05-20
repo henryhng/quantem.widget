@@ -14,7 +14,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import to_numpy, compute_stats, extract_dataset_meta
 from quantem.widget.io import IO, IOResult
 from quantem.widget.json_state import build_json_header, resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.show2d import _reject_unknown_kwargs
@@ -504,13 +504,14 @@ class Show3D(anywidget.AnyWidget):
         _extracted_pixel_size = None
         if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
             _extracted_title = data.name if data.name else None
-            if hasattr(data, "sampling") and len(data.sampling) >= 3:
-                sampling_val = float(data.sampling[1])
-                if hasattr(data, "units"):
-                    units = list(data.units)
-                    if units[1] in ("nm", "nanometer"):
-                        sampling_val = sampling_val * 10  # nm → Å
-                _extracted_pixel_size = sampling_val
+            # Preserve the original len(sampling) >= 3 guard: extract_dataset_meta
+            # indexes sampling[1]/units[1] unconditionally, so only trust its
+            # pixel_size when the sampling vector is long enough.
+            if len(data.sampling) >= 3:
+                m = extract_dataset_meta(
+                    data, sampling_axis=1, nm_units=("nm", "nanometer")
+                )
+                _extracted_pixel_size = m.pixel_size
             data = data.array
 
         # Convert first panel to NumPy
@@ -817,8 +818,7 @@ class Show3D(anywidget.AnyWidget):
 
     def set_image(self, data, labels=None):
         """Replace the stack data. Preserves all display settings."""
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            data = data.array
+        data = extract_dataset_meta(data).array
         data = to_numpy(data)
         if data.ndim != 3:
             raise ValueError(f"Expected 3D array, got {data.ndim}D")
@@ -1046,18 +1046,15 @@ class Show3D(anywidget.AnyWidget):
         display_frame = self._get_display_frame()
         with self.hold_sync():
             # Stats from full-res data (not binned display)
-            if self._use_torch:
-                t = self._data_torch[self.slice_idx]
-                self.stats_mean = float(t.mean().item())
-                self.stats_min = float(t.min().item())
-                self.stats_max = float(t.max().item())
-                self.stats_std = float(t.std().item())
-            else:
-                full_frame = self._data[self.slice_idx]
-                self.stats_mean = float(full_frame.mean())
-                self.stats_min = float(full_frame.min())
-                self.stats_max = float(full_frame.max())
-                self.stats_std = float(full_frame.std())
+            s = compute_stats(
+                self._data_torch[self.slice_idx]
+                if self._use_torch
+                else self._data[self.slice_idx]
+            )
+            self.stats_mean = s["mean"]
+            self.stats_min = s["min"]
+            self.stats_max = s["max"]
+            self.stats_std = s["std"]
             if self.timestamps and self.slice_idx < len(self.timestamps):
                 self.current_timestamp = self.timestamps[self.slice_idx]
             if self.roi_active:

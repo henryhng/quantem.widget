@@ -14,8 +14,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy, _resize_image
-from quantem.widget.io import IOResult
+from quantem.widget.array_utils import to_numpy, _resize_image, extract_dataset_meta
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
     bind_tool_runtime_api,
@@ -290,28 +289,15 @@ class Edit2D(anywidget.AnyWidget):
         self.widget_version = resolve_widget_version()
         self.mode = mode
 
-        # Check if data is an IOResult and extract metadata
-        if isinstance(data, IOResult):
-            if not title and data.title:
-                title = data.title
-            if pixel_size == 0.0 and data.pixel_size is not None:
-                pixel_size = data.pixel_size
-            if labels is None and data.labels:
-                labels = data.labels
-            data = data.data
-
-        # Check if data is a Dataset2d and extract metadata
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            if not title and data.name:
-                title = data.name
-            if pixel_size == 0.0 and hasattr(data, "units"):
-                units = list(data.units)
-                sampling_val = float(data.sampling[-1])
-                if units[-1] in ("nm",):
-                    pixel_size = sampling_val * 10  # nm -> angstrom
-                elif units[-1] in ("\u00c5", "angstrom", "A"):
-                    pixel_size = sampling_val
-            data = data.array
+        # Check if data is an IOResult or Dataset2d and extract metadata
+        m = extract_dataset_meta(data, sampling_axis=-1)
+        if not title and m.title:
+            title = m.title
+        if pixel_size == 0.0 and m.pixel_size is not None:
+            pixel_size = m.pixel_size
+        if labels is None and m.labels:
+            labels = m.labels
+        data = m.array
 
         # Convert input to NumPy (handles NumPy, CuPy, PyTorch)
         if isinstance(data, list):
@@ -546,10 +532,10 @@ class Edit2D(anywidget.AnyWidget):
 
     def set_image(self, data, **kwargs):
         """Replace the image data."""
-        if hasattr(data, "array") and hasattr(data, "name") and hasattr(data, "sampling"):
-            if "title" not in kwargs and data.name:
-                self.title = data.name
-            data = data.array
+        m = extract_dataset_meta(data)
+        if "title" not in kwargs and m.title:
+            self.title = m.title
+        data = m.array
 
         if isinstance(data, list):
             images = [to_numpy(d) for d in data]

@@ -16,7 +16,7 @@ import anywidget
 import numpy as np
 import traitlets
 
-from quantem.widget.array_utils import to_numpy
+from quantem.widget.array_utils import compute_stats, to_numpy
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
     bind_tool_runtime_api,
@@ -806,11 +806,11 @@ class Show1D(anywidget.AnyWidget):
     def _compute_stats(self):
         means, mins, maxs, stds = [], [], [], []
         for i in range(self.n_traces):
-            trace = self._data[i]
-            means.append(float(np.mean(trace)))
-            mins.append(float(np.min(trace)))
-            maxs.append(float(np.max(trace)))
-            stds.append(float(np.std(trace)))
+            s = compute_stats(self._data[i])
+            means.append(s["mean"])
+            mins.append(s["min"])
+            maxs.append(s["max"])
+            stds.append(s["std"])
         self.stats_mean = means
         self.stats_min = mins
         self.stats_max = maxs
