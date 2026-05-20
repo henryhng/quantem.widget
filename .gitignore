@@ -51,3 +51,10 @@ docs/_build
 
 # Pre-commit
 .pre-commit-config.yaml
+
+# Personal scratch (data, notebooks, presets, devcontainer)
+self/
+
+# Personal source files (kept in place for imports, ignored by git)
+src/quantem/widget/detector_calibration.py
+tests/test_detector_calibration.py
