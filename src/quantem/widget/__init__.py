@@ -31,6 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from quantem.widget.show_metric_explorer import MetricExplorer
     from quantem.widget.showcomplex import ShowComplex2D
     from quantem.widget.showdiffraction import ShowDiffraction
+    from quantem.widget.strain_map_2d import StrainMap2D
 
 
 _EXPORTS = {
@@ -55,6 +56,7 @@ _EXPORTS = {
     "MetricExplorer": ("quantem.widget.show_metric_explorer", "MetricExplorer"),
     "ShowComplex2D": ("quantem.widget.showcomplex", "ShowComplex2D"),
     "ShowDiffraction": ("quantem.widget.showdiffraction", "ShowDiffraction"),
+    "StrainMap2D": ("quantem.widget.strain_map_2d", "StrainMap2D"),
     "profile": ("quantem.widget.profile", "profile"),
     "enable_hmr": ("quantem.widget._hmr", "enable_hmr"),
     "disable_hmr": ("quantem.widget._hmr", "disable_hmr"),
@@ -97,6 +99,7 @@ __all__ = [
     "MetricExplorer",
     "ShowComplex2D",
     "ShowDiffraction",
+    "StrainMap2D",
     "enable_hmr",
     "disable_hmr",
 ]
