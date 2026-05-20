@@ -260,3 +260,23 @@ def test_summary_includes_live_line(capsys):
     assert "streaming" in out
     assert "2/16" in out
     assert "1 drops" in out
+
+
+def test_partition_index_advances_correctly_on_large_batch():
+    """When a single append jumps the counter by multiple partitions, the
+    bookkeeping must advance one partition at a time so the next partition
+    boundary is hit at the right frame count (per LiberTEM `frames_per_partition`)."""
+    w = _seed_widget(nav_shape=(8, 8), det_shape=(8, 8))
+    w.live_partition_size = 4
+    # Pre-state
+    assert w.live_last_partition_idx == 0
+    # One big batch of 13 frames spans 3 partitions
+    batch = np.ones((13, 8, 8), dtype=np.float32)
+    w.append_frames(0, batch)
+    # After the batch, last_partition_idx should be 12 (3 * partition_size),
+    # not 13 (the previous bug discarded intermediate boundaries by setting
+    # last_partition_idx = live_frames_received).
+    assert w.live_frames_received == 13
+    assert w.live_last_partition_idx == 12, (
+        f"expected 12 (3 * partition_size), got {w.live_last_partition_idx}"
+    )

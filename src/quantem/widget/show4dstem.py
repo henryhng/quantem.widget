@@ -988,13 +988,30 @@ class Show4DSTEM(anywidget.AnyWidget):
         Mirrors LiberTEM's ``frames_per_partition`` feedback cadence: every
         ``live_partition_size`` frames we recompute BF/ADF/HAADF so the
         microscopist sees the scan filling in.
+
+        When a single ``append_frames`` call jumps the counter by multiple
+        partition sizes (common at high-rate sources e.g. NCEM 4D-Camera
+        87 kHz batched into a 30 Hz display loop), the bookkeeping must
+        advance one partition at a time so we do exactly one refresh per
+        crossed boundary AND do not lose the per-partition tracking — a
+        single ``=`` previously discarded intermediate boundaries.
         """
         if not self.live_mode or self._data is None:
             return
-        if (self.live_frames_received - self.live_last_partition_idx) >= self.live_partition_size:
-            self.live_last_partition_idx = self.live_frames_received
-            self._compute_virtual_image_from_roi()
-            self._update_frame()
+        partition = max(1, int(self.live_partition_size))
+        gap = self.live_frames_received - self.live_last_partition_idx
+        if gap < partition:
+            return
+        # Advance the last-partition index by full partitions (consume the
+        # gap) and refresh once. We refresh once per call rather than once
+        # per crossed boundary so the UI never gets pinned in N back-to-back
+        # virtual-image computes on a single oversized batch.
+        n_crossed = gap // partition
+        self.live_last_partition_idx = (
+            self.live_last_partition_idx + n_crossed * partition
+        )
+        self._compute_virtual_image_from_roi()
+        self._update_frame()
 
     def _on_live_status(self, change=None):
         """Finalize live acquisition when status transitions to 'done'.
