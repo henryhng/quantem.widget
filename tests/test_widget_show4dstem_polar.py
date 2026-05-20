@@ -66,33 +66,43 @@ def test_polar_radial_bytes_shape_and_unbiased_against_corner_clipping():
     `polar.sum(theta) / valid_count(theta)` so out-of-detector wedges do not
     drag the average down (a plain `polar.mean(axis=1)` would).
     """
-    # Use a small detector + a polar range that intentionally reaches past the
-    # inscribed circle so some (q, theta) samples land off the detector and
-    # would be zero-clamped by the bilinear-stencil `valid` mask.
+    # Detector 32×32, center (16,16). Inscribed-circle radius = 16 px; corner
+    # reach = hypot(16,16) ≈ 22.6 px. Choose q_max so some thetas at the outer
+    # q are off-detector (cardinal directions past 16 px) but others are still
+    # inside (diagonal corners within 22.6 px). With k_pixel_size=0.5 mrad/px,
+    # q_max ≈ 9 mrad → 18 px from center → cardinals (theta=0,π/2,...) off,
+    # diagonals on. This is the regime where the bias matters.
     rng = np.random.default_rng(0)
     det = 32
     data = (rng.random((1, 1, det, det), dtype=np.float32) * 100.0 + 1.0)
     w = Show4DSTEM(data, k_pixel_size=0.5, verbose=False)
     w.polar_q_min_mrad = 0.0
-    w.polar_q_max_mrad = det * 0.5 * 0.95  # close to the inscribed-circle edge
+    w.polar_q_max_mrad = 9.0  # 18 px from center -> mixed valid/invalid
     w.polar_n_q = 48
     w.polar_n_theta = 90
     w.show_polar = True
+
     assert len(w.polar_radial_bytes) == w.polar_n_q * 4
     polar = np.frombuffer(w.polar_bytes, dtype=np.float32).reshape(
         w.polar_n_q, w.polar_n_theta
     )
     radial = np.frombuffer(w.polar_radial_bytes, dtype=np.float32)
-    # On a uniformly-positive DP, the unbiased radial should not collapse
-    # toward zero at large q the way the naive `polar.mean()` does.
     naive_mean = polar.mean(axis=1)
-    assert radial[-1] > 1.5 * naive_mean[-1] or float(radial[-1]) > 50.0, (
-        "radial profile at largest q is collapsing the way a naive theta-mean "
-        "would (corner-clipped wedges treated as zeros)"
-    )
-    # And for the inner q where every theta is inside the detector, the
-    # unbiased radial must equal the naive mean (valid_count == n_theta).
+
+    # Inner q (always-inside): unbiased equals naive mean.
     np.testing.assert_allclose(radial[:4], naive_mean[:4], rtol=1e-5, atol=1e-5)
+
+    # Find the largest q where partial clipping happens (some zeros, not all).
+    valid_per_q = (polar != 0).sum(axis=1)
+    partial = np.where((valid_per_q > 0) & (valid_per_q < w.polar_n_theta))[0]
+    assert partial.size > 0, "test scenario should produce partial clipping"
+    q_idx = int(partial[-1])
+    # At a partially-clipped q, the unbiased mean is strictly larger than the
+    # naive (which divides by full n_theta instead of valid count).
+    assert radial[q_idx] > naive_mean[q_idx] + 1.0, (
+        f"radial profile is biased at partial-clip q={q_idx}: "
+        f"unbiased={radial[q_idx]:.3f}, naive={naive_mean[q_idx]:.3f}"
+    )
 
 
 def test_polar_ellipse_correction_undistorts_ring_along_major_direction():
