@@ -4464,12 +4464,24 @@ class Show4DSTEM(anywidget.AnyWidget):
         shifted so its peak sits at the origin ``(0, 0)`` (FFT convention,
         same as py4DSTEM's ``probe.kernel``). After this shift, cross
         correlation peaks land directly at DP Bragg disk positions.
+
+        Sub-pixel-correct: the shift is performed in Fourier space via a
+        phase ramp ``exp(-2πi·(ky·row + kx·col))`` so non-integer
+        ``center_row`` / ``center_col`` do NOT silently quantize to the
+        nearest pixel (a plain ``np.roll`` would introduce up to ½ px bias
+        on every detected peak).
         """
-        probe_centered = self._get_vacuum_probe()
-        # Shift the probe center to the FFT origin (0, 0)
-        shift_row = -int(round(float(self.center_row)))
-        shift_col = -int(round(float(self.center_col)))
-        return np.roll(probe_centered, shift=(shift_row, shift_col), axis=(0, 1)).astype(np.float32)
+        probe_centered = self._get_vacuum_probe().astype(np.float32)
+        n_rows, n_cols = probe_centered.shape
+        cy = float(self.center_row)
+        cx = float(self.center_col)
+        ky = np.fft.fftfreq(n_rows).astype(np.float32)[:, None]
+        kx = np.fft.fftfreq(n_cols).astype(np.float32)[None, :]
+        # Move the probe peak FROM (cy, cx) TO origin: g(y,x) = f(y+cy, x+cx).
+        # FFT shift theorem: g(y) = f(y+a) ↔ G(k) = F(k) · exp(+2πi·k·a).
+        phase_ramp = np.exp(2j * np.pi * (ky * cy + kx * cx))
+        ft = np.fft.fft2(probe_centered) * phase_ramp
+        return np.real(np.fft.ifft2(ft)).astype(np.float32)
 
     def set_vacuum_probe(self, probe_or_None) -> Self:
         """Set the vacuum probe template used for Bragg-disk detection.

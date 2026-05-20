@@ -333,3 +333,48 @@ def test_show4dstem_detect_bragg_peaks_returns_array_when_inactive():
     out = w.detect_bragg_peaks()
     assert out.shape[1] == 3
     assert out.shape[0] >= 2
+
+
+# ─── Regression: sub-pixel center handled exactly (Fourier phase-ramp shift) ───
+
+
+def test_bragg_subpixel_center_does_not_quantize_peaks():
+    """Pin the Fourier phase-ramp center shift. With a vacuum probe whose
+    true center is at (31.7, 32.4) (non-integer), peaks detected at known
+    sub-pixel offsets must NOT snap to integer-rounded centers — which a
+    plain ``np.roll`` would silently do.
+    """
+    import numpy as np
+    from quantem.widget import Show4DSTEM
+
+    det = 64
+    cy, cx = 31.7, 32.4
+    yy, xx = np.mgrid[:det, :det].astype(np.float32)
+    # Three Bragg-like Gaussian spots at known sub-pixel offsets from (cy, cx).
+    truth = [(cy + 12.3, cx - 8.6), (cy - 9.1, cx + 5.5), (cy + 4.4, cx + 14.2)]
+    dp = np.zeros((det, det), dtype=np.float32)
+    for ty, tx in truth:
+        dp += np.exp(-((yy - ty) ** 2 + (xx - tx) ** 2) / (2.0 * 3.0 ** 2))
+    data = dp[None, None, ...]
+
+    w = Show4DSTEM(data, verbose=False, precompute_virtual_images=False)
+    # Set a non-integer center; this is the key check.
+    w.center_row = cy
+    w.center_col = cx
+    w.bf_radius = 5.0
+    w.set_vacuum_probe(None)  # auto-build with center at (cy, cx)
+    w.bragg_detect_active = True
+    w.bragg_subpixel = "multicorr"
+    w.bragg_min_peak_spacing = 4.0
+    w.bragg_max_peaks = 10
+
+    peaks = np.frombuffer(w.bragg_peaks_bytes, dtype=np.float32).reshape(-1, 3)
+    assert peaks.shape[0] >= 3, f"expected >=3 peaks, got {peaks.shape[0]}"
+    # For each truth peak, the nearest detected peak should be within 0.4 px.
+    for ty, tx in truth:
+        dists = np.hypot(peaks[:, 0] - ty, peaks[:, 1] - tx)
+        nearest = float(dists.min())
+        assert nearest < 0.4, (
+            f"peak ({ty:.2f},{tx:.2f}) recovered to {nearest:.3f} px — "
+            "indicates the sub-pixel center got quantized somewhere"
+        )
