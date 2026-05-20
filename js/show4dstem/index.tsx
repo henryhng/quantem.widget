@@ -1011,6 +1011,16 @@ function Show4DSTEM() {
   const [profileLine, setProfileLine] = useModelState<{row: number; col: number}[]>("profile_line");
   const [profileWidth] = useModelState<number>("profile_width");
 
+  // Live acquisition state (only rendered when live_mode = true).
+  // The Python observer drives the streaming -> done lifecycle; the UI
+  // exposes Pause / Resume / End buttons that flip live_status. Python
+  // owns the partition-cadence virtual-image refresh.
+  const [liveMode] = useModelState<boolean>("live_mode");
+  const [liveFramesReceived] = useModelState<number>("live_frames_received");
+  const [liveTotalExpected] = useModelState<number>("live_total_expected");
+  const [liveDropCount] = useModelState<number>("live_drop_count");
+  const [liveStatus, setLiveStatus] = useModelState<string>("live_status");
+
   // Auto-detection trigger
   // ─────────────────────────────────────────────────────────────────────────
   // Local State (UI-only, not synced to Python)
@@ -3677,6 +3687,97 @@ function Show4DSTEM() {
           themeColors={themeColors}
         />
       </Typography>
+
+      {/* LIVE STATUS ROW — only when live_mode = true. Reuses existing
+          controlRow / switchStyles / compactButton style constants. */}
+      {liveMode && (() => {
+        const total = Math.max(1, liveTotalExpected);
+        const pct = Math.max(0, Math.min(100, (liveFramesReceived / total) * 100));
+        const statusColor =
+          liveStatus === "streaming" ? "#4caf50" :
+          liveStatus === "paused" ? "#ff9800" :
+          liveStatus === "done" ? themeColors.accent :
+          themeColors.textMuted;
+        const dropColor = liveDropCount > 0 ? "#e53935" : themeColors.textMuted;
+        return (
+          <Box
+            sx={{
+              ...controlRow,
+              mb: `${SPACING.SM}px`,
+              border: `1px solid ${themeColors.border}`,
+              bgcolor: themeColors.controlBg,
+              width: "fit-content",
+              minWidth: 480,
+            }}
+          >
+            <Box
+              sx={{
+                px: 0.75,
+                py: 0.25,
+                fontSize: 10,
+                fontFamily: "monospace",
+                fontWeight: "bold",
+                color: "#fff",
+                bgcolor: statusColor,
+                textTransform: "uppercase",
+              }}
+            >
+              {liveStatus}
+            </Box>
+            <Typography sx={{ ...typography.value, color: themeColors.text }}>
+              {liveFramesReceived} / {liveTotalExpected}
+            </Typography>
+            <Box
+              sx={{
+                position: "relative",
+                width: 160,
+                height: 4,
+                bgcolor: themeColors.bgAlt,
+                border: `1px solid ${themeColors.border}`,
+              }}
+            >
+              <Box
+                sx={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  bottom: 0,
+                  width: `${pct}%`,
+                  bgcolor: statusColor,
+                }}
+              />
+            </Box>
+            <Typography sx={{ ...typography.value, color: dropColor }}>
+              drops: {liveDropCount}
+            </Typography>
+            <Box sx={{ flex: 1 }} />
+            <Button
+              size="small"
+              sx={compactButton}
+              disabled={liveStatus !== "streaming"}
+              onClick={() => setLiveStatus("paused")}
+            >
+              Pause
+            </Button>
+            <Button
+              size="small"
+              sx={compactButton}
+              disabled={liveStatus !== "paused"}
+              onClick={() => setLiveStatus("streaming")}
+            >
+              Resume
+            </Button>
+            <Button
+              size="small"
+              sx={compactButton}
+              disabled={liveStatus === "done"}
+              onClick={() => setLiveStatus("done")}
+            >
+              End
+            </Button>
+          </Box>
+        );
+      })()}
 
       {/* MAIN CONTENT: DP | VI | FFT (three columns when FFT shown) */}
       <Stack direction="row" spacing={`${SPACING.LG}px`}>

@@ -288,6 +288,22 @@ class Show4DSTEM(anywidget.AnyWidget):
     profile_width = traitlets.Int(1).tag(sync=True)
 
     # =========================================================================
+    # Live acquisition (incremental scan-axis growth)
+    # See docs/live notes and CLAUDE.md "live mode" — these traits expose the
+    # *API surface* that downstream connectors (LiberTEM, DECTRIS SIMPLON v1.8,
+    # NCEM 4D-camera streamer, Bluesky callbacks, in-process queues) wire into.
+    # No ZMQ/HTTP listener is implemented here.
+    # =========================================================================
+    live_mode = traitlets.Bool(False).tag(sync=True)
+    live_nav_shape = traitlets.List(traitlets.Int(), default_value=[0, 0]).tag(sync=True)
+    live_frames_received = traitlets.Int(0).tag(sync=True)
+    live_total_expected = traitlets.Int(0).tag(sync=True)
+    live_drop_count = traitlets.Int(0).tag(sync=True)
+    live_partition_size = traitlets.Int(64).tag(sync=True)
+    live_last_partition_idx = traitlets.Int(0).tag(sync=True)
+    live_status = traitlets.Unicode("idle").tag(sync=True)  # idle | streaming | paused | done
+
+    # =========================================================================
     # Tool visibility / locking
     # =========================================================================
     disabled_tools = traitlets.List(traitlets.Unicode()).tag(sync=True)
@@ -313,6 +329,7 @@ class Show4DSTEM(anywidget.AnyWidget):
         disable_fft: bool = False,
         disable_virtual: bool = False,
         disable_frame: bool = False,
+        disable_live: bool = False,
         disable_all: bool = False,
     ) -> list[str]:
         return build_tool_groups(
@@ -332,6 +349,7 @@ class Show4DSTEM(anywidget.AnyWidget):
                 "fft": disable_fft,
                 "virtual": disable_virtual,
                 "frame": disable_frame,
+                "live": disable_live,
             },
         )
 
@@ -351,6 +369,7 @@ class Show4DSTEM(anywidget.AnyWidget):
         hide_fft: bool = False,
         hide_virtual: bool = False,
         hide_frame: bool = False,
+        hide_live: bool = False,
         hide_all: bool = False,
     ) -> list[str]:
         return build_tool_groups(
@@ -370,6 +389,7 @@ class Show4DSTEM(anywidget.AnyWidget):
                 "fft": hide_fft,
                 "virtual": hide_virtual,
                 "frame": hide_frame,
+                "live": hide_live,
             },
         )
 
@@ -406,6 +426,7 @@ class Show4DSTEM(anywidget.AnyWidget):
         disable_fft: bool = False,
         disable_virtual: bool = False,
         disable_frame: bool = False,
+        disable_live: bool = False,
         disable_all: bool = False,
         hidden_tools: list[str] | None = None,
         hide_display: bool = False,
@@ -420,6 +441,7 @@ class Show4DSTEM(anywidget.AnyWidget):
         hide_fft: bool = False,
         hide_virtual: bool = False,
         hide_frame: bool = False,
+        hide_live: bool = False,
         hide_all: bool = False,
         show_fft: bool = False,
         fft_window: bool = True,
@@ -482,6 +504,7 @@ class Show4DSTEM(anywidget.AnyWidget):
             disable_fft=disable_fft,
             disable_virtual=disable_virtual,
             disable_frame=disable_frame,
+            disable_live=disable_live,
             disable_all=disable_all,
         )
         self.hidden_tools = self._build_hidden_tools(
@@ -498,6 +521,7 @@ class Show4DSTEM(anywidget.AnyWidget):
             hide_fft=hide_fft,
             hide_virtual=hide_virtual,
             hide_frame=hide_frame,
+            hide_live=hide_live,
             hide_all=hide_all,
         )
         self.show_fft = show_fft
@@ -681,6 +705,10 @@ class Show4DSTEM(anywidget.AnyWidget):
             "vi_roi_radius", "vi_roi_width", "vi_roi_height"
         ])
 
+        # Live acquisition: partition-cadence refresh and status transitions.
+        self.observe(self._on_live_frames_received, names=["live_frames_received"])
+        self.observe(self._on_live_status, names=["live_status"])
+
         if state is not None:
             if isinstance(state, (str, pathlib.Path)):
                 state = unwrap_state_payload(
@@ -753,8 +781,244 @@ class Show4DSTEM(anywidget.AnyWidget):
         with self.hold_trait_notifications():
             self.pos_row = min(self.pos_row, self.shape_rows - 1)
             self.pos_col = min(self.pos_col, self.shape_cols - 1)
+            # set_image replaces the buffer wholesale — clear live mode so the
+            # JS status row does not show stale frames-received against the new
+            # buffer and append_frames cannot accidentally write into it.
+            if self.live_mode:
+                self.live_mode = False
+                self.live_status = "idle"
+                self.live_frames_received = 0
+                self.live_last_partition_idx = 0
+                self.live_total_expected = 0
+                self.live_drop_count = 0
+                self.live_nav_shape = [0, 0]
         self._compute_virtual_image_from_roi()
         self._update_frame()
+
+    # =========================================================================
+    # Live acquisition API (Phase 1 — append-only, no transport)
+    # =========================================================================
+    # Design note: this is the *Python API surface* for live 4D-STEM viewing.
+    # A downstream connector (LiberTEM `Context.run_udf_iter` + LiveContext
+    # with `make_acquisition(conn=..., nav_shape=..., frames_per_partition=...)`,
+    # a DECTRIS SIMPLON v1.8 ZMQ stream, NCEM 4D-Camera stream, Bluesky
+    # `descriptor`/`event` callback, in-process queue, or test fixture) calls
+    # `begin_live(...)` once, then `append_frames(start_idx, frames)` many
+    # times. The connector bumps `live_drop_count` when frame-id monotone
+    # increment gaps are detected (per SIMPLON v1.8). Virtual-image refresh
+    # cadence is governed by `live_partition_size` (mirrors LiberTEM's
+    # `frames_per_partition`).
+    def begin_live(
+        self,
+        nav_shape,
+        det_shape,
+    ) -> Self:
+        """Allocate a zero-filled live buffer of shape (R_Nx, R_Ny, det_y, det_x).
+
+        Parameters
+        ----------
+        nav_shape : (int, int)
+            Final scan shape (R_Nx, R_Ny). Frames are written into this buffer
+            by ``append_frames`` using a linearized scan index.
+        det_shape : (int, int)
+            Detector shape (det_y, det_x).
+
+        Returns
+        -------
+        Self
+
+        Notes
+        -----
+        The buffer is always ``float32`` and always zero-filled. (An earlier
+        ``tail_frames``/``frame_dtype`` design allowed NaN fill so unfilled
+        positions were "visually distinguishable", but NaNs propagated through
+        the virtual-image masked sums and corrupted every unfilled pixel —
+        zero fill is the safe, predictable behavior.)
+        """
+        if len(nav_shape) != 2 or len(det_shape) != 2:
+            raise ValueError("nav_shape and det_shape must each be length-2")
+        R_Nx, R_Ny = int(nav_shape[0]), int(nav_shape[1])
+        det_y, det_x = int(det_shape[0]), int(det_shape[1])
+        if R_Nx <= 0 or R_Ny <= 0 or det_y <= 0 or det_x <= 0:
+            raise ValueError(f"All dims must be positive, got {nav_shape}, {det_shape}")
+
+        buffer = np.zeros((R_Nx, R_Ny, det_y, det_x), dtype=np.float32)
+
+        # Wire buffer into existing widget pipeline (uses _data / torch tensor path).
+        self._data = torch.from_numpy(buffer).to(self._device)
+        self.n_frames = 1
+        self._scan_shape = (R_Nx, R_Ny)
+        self._det_shape = (det_y, det_x)
+        self.shape_rows = R_Nx
+        self.shape_cols = R_Ny
+        self.det_rows = det_y
+        self.det_cols = det_x
+        # Recompute cached coordinate tensors so virtual image masks size correctly.
+        self._det_row_coords = torch.arange(det_y, device=self._device, dtype=torch.float32)[:, None]
+        self._det_col_coords = torch.arange(det_x, device=self._device, dtype=torch.float32)[None, :]
+        self._scan_row_coords = torch.arange(R_Nx, device=self._device, dtype=torch.float32)[:, None]
+        self._scan_col_coords = torch.arange(R_Ny, device=self._device, dtype=torch.float32)[None, :]
+        # Drop any preset cache from the previous dataset.
+        self._cached_bf_virtual = None
+        self._cached_abf_virtual = None
+        self._cached_adf_virtual = None
+        # Reset sparse trackers.
+        self._sparse_mask = np.zeros((1, R_Nx, R_Ny), dtype=bool)
+        self._dose_map = np.zeros((1, R_Nx, R_Ny), dtype=np.float32)
+        self._sparse_samples = {}
+        self._sparse_order = []
+
+        # Reset live trait state inside one notification batch.
+        with self.hold_trait_notifications():
+            self.live_mode = True
+            self.live_nav_shape = [R_Nx, R_Ny]
+            self.live_total_expected = R_Nx * R_Ny
+            self.live_frames_received = 0
+            self.live_last_partition_idx = 0
+            self.live_drop_count = 0
+            self.live_status = "streaming"
+            # Live-buffer storage timestamp for end_live() summary.
+            self._live_started_at = time.perf_counter()
+            # Snap viewer + ROI / detector centers + radii into the new bounds
+            # (the placeholder dataset may have used a larger detector or scan).
+            self.pos_row = min(self.pos_row, R_Nx - 1)
+            self.pos_col = min(self.pos_col, R_Ny - 1)
+            self.center_row = float(min(max(self.center_row, 0.0), det_y - 1))
+            self.center_col = float(min(max(self.center_col, 0.0), det_x - 1))
+            self.bf_radius = float(min(self.bf_radius, min(det_y, det_x) / 2.0))
+            self.roi_center_row = float(min(max(self.roi_center_row, 0.0), det_y - 1))
+            self.roi_center_col = float(min(max(self.roi_center_col, 0.0), det_x - 1))
+
+        # First render of the (empty) buffer so the canvas updates.
+        self._compute_virtual_image_from_roi()
+        self._update_frame()
+        return self
+
+    def append_frames(self, start_idx: int, frames) -> Self:
+        """Write a batch of incoming frames into the pre-allocated buffer.
+
+        Parameters
+        ----------
+        start_idx : int
+            Linearized scan position of the first frame
+            (``row * R_Ny + col``).
+        frames : array_like
+            Either a 2D ``(det_y, det_x)`` array (single frame) or a 3D
+            ``(N, det_y, det_x)`` batch. Cast to float32 internally.
+
+        Returns
+        -------
+        Self
+        """
+        if not self.live_mode or self._data is None:
+            raise RuntimeError(
+                "append_frames called outside live mode — call begin_live(...) first"
+            )
+
+        frames_np = to_numpy(frames)
+        if frames_np.ndim == 2:
+            frames_np = frames_np[np.newaxis, ...]
+        if frames_np.ndim != 3:
+            raise ValueError(
+                f"frames must be 2D or 3D, got {frames_np.ndim}D shape {frames_np.shape}"
+            )
+        if frames_np.dtype != np.float32:
+            frames_np = frames_np.astype(np.float32)
+
+        n_new = frames_np.shape[0]
+        if frames_np.shape[1] != self.det_rows or frames_np.shape[2] != self.det_cols:
+            raise ValueError(
+                f"Frame detector shape {frames_np.shape[1:]} does not match "
+                f"buffer detector shape ({self.det_rows}, {self.det_cols})"
+            )
+
+        R_Nx = self.shape_rows
+        R_Ny = self.shape_cols
+        total = R_Nx * R_Ny
+        if start_idx < 0 or start_idx + n_new > total:
+            raise ValueError(
+                f"append_frames out of range: start_idx={start_idx} + n={n_new} "
+                f"exceeds buffer length {total}"
+            )
+
+        # Flat-index the torch tensor view, then write. Stays on _device.
+        flat_view = self._data.view(total, self.det_rows, self.det_cols)
+        frames_t = torch.from_numpy(frames_np).to(self._device)
+        flat_view[start_idx:start_idx + n_new] = frames_t
+
+        # Bump counter outside hold so the partition-crossing observer fires once.
+        self.live_frames_received = self.live_frames_received + n_new
+        return self
+
+    def pause_live(self) -> Self:
+        if self.live_mode:
+            self.live_status = "paused"
+        return self
+
+    def resume_live(self) -> Self:
+        if self.live_mode and self.live_status in ("paused", "idle"):
+            self.live_status = "streaming"
+        return self
+
+    def end_live(self) -> Self:
+        """Finalize live acquisition (refresh + summary handled by status observer)."""
+        if not self.live_mode:
+            return self
+        # All finalize work happens in _on_live_status when status transitions to
+        # "done", so the UI End button and this method behave identically.
+        self.live_status = "done"
+        return self
+
+    def bump_drop_count(self, n: int = 1) -> Self:
+        """Increment the drop counter (called by the connector on frame-id gaps).
+
+        DECTRIS SIMPLON v1.8 emits a monotonically incrementing ``frame`` id;
+        downstream connectors detect gaps (frame ``k+1`` missing between ``k``
+        and ``k+2``) and bump this counter so the user can see acquisition
+        quality at a glance.
+        """
+        if n < 0:
+            raise ValueError(f"bump_drop_count expects n >= 0, got {n}")
+        self.live_drop_count = self.live_drop_count + int(n)
+        return self
+
+    def _on_live_frames_received(self, change=None):
+        """Cross the partition boundary -> refresh virtual images.
+
+        Mirrors LiberTEM's ``frames_per_partition`` feedback cadence: every
+        ``live_partition_size`` frames we recompute BF/ADF/HAADF so the
+        microscopist sees the scan filling in.
+        """
+        if not self.live_mode or self._data is None:
+            return
+        if (self.live_frames_received - self.live_last_partition_idx) >= self.live_partition_size:
+            self.live_last_partition_idx = self.live_frames_received
+            self._compute_virtual_image_from_roi()
+            self._update_frame()
+
+    def _on_live_status(self, change=None):
+        """Finalize live acquisition when status transitions to 'done'.
+
+        This is the SINGLE place that runs the final refresh, partition-index
+        bookkeeping, and the summary print — so the UI End button (which sets
+        ``live_status='done'`` directly) and the Python ``end_live()`` method
+        produce the same observable state. Other transitions are no-ops.
+        """
+        if not (change and change.get("new") == "done" and self.live_mode):
+            return
+        if self._data is None:
+            return
+        self.live_last_partition_idx = self.live_frames_received
+        duration = time.perf_counter() - getattr(
+            self, "_live_started_at", time.perf_counter()
+        )
+        self._compute_virtual_image_from_roi()
+        self._update_frame()
+        print(
+            f"Live acquisition ended: {self.live_frames_received}/"
+            f"{self.live_total_expected} frames, {self.live_drop_count} drops, "
+            f"{duration:.2f}s"
+        )
 
     def __repr__(self) -> str:
         k_unit = "mrad" if self.k_calibrated else "px"
@@ -839,6 +1103,16 @@ class Show4DSTEM(anywidget.AnyWidget):
             "frame_boomerang": self.frame_boomerang,
             "disabled_tools": self.disabled_tools,
             "hidden_tools": self.hidden_tools,
+            # Live acquisition state (mode + counters; included so a saved
+            # widget can be reloaded mid-stream and a connector can resume).
+            "live_mode": self.live_mode,
+            "live_nav_shape": list(self.live_nav_shape),
+            "live_frames_received": self.live_frames_received,
+            "live_total_expected": self.live_total_expected,
+            "live_drop_count": self.live_drop_count,
+            "live_partition_size": self.live_partition_size,
+            "live_last_partition_idx": self.live_last_partition_idx,
+            "live_status": self.live_status,
         }
 
     def save(self, path: str):
@@ -950,6 +1224,11 @@ class Show4DSTEM(anywidget.AnyWidget):
             lines.append(f"Locked:   {', '.join(self.disabled_tools)}")
         if self.hidden_tools:
             lines.append(f"Hidden:   {', '.join(self.hidden_tools)}")
+        if self.live_mode:
+            lines.append(
+                f"Live:     {self.live_status}, {self.live_frames_received}/"
+                f"{self.live_total_expected} frames, {self.live_drop_count} drops"
+            )
         print("\n".join(lines))
 
     # =========================================================================

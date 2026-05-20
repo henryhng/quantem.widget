@@ -19,7 +19,7 @@
       "aliases": {}
     },
     "Show4DSTEM": {
-      "tool_groups": ["display", "histogram", "stats", "navigation", "playback", "view", "export", "roi", "profile", "fft", "virtual", "frame", "all"],
+      "tool_groups": ["display", "histogram", "stats", "navigation", "playback", "view", "export", "roi", "profile", "fft", "virtual", "frame", "live", "all"],
       "aliases": {}
     },
     "ShowComplex2D": {
