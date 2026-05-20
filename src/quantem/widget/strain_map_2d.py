@@ -26,11 +26,20 @@ import anywidget
 import numpy as np
 import traitlets
 
-# Hard dependencies on quantem core
-from quantem.diffractive_imaging.ptycho_utils import AffineTransform  # noqa: F401  (cited)
-from quantem.imaging.lattice import Lattice  # noqa: F401  (cited)
-
 from quantem.widget.array_utils import to_numpy
+
+# Note on quantem core integration: the strain decomposition here mirrors
+# `py4DSTEM.process.strain.latticevectors.get_strain_from_reference_g1g2`
+# (Hytch convention). Two quantem modules are documented as conceptually
+# related but are NOT currently imported, to keep this PR self-contained:
+#   - `quantem.imaging.lattice.Lattice.from_data` — alternative seed for
+#     `_initial_g_from_peaks`; could replace it if we want to share the
+#     lattice-vector refinement loop with non-4DSTEM widgets.
+#   - `quantem.diffractive_imaging.ptycho_utils.AffineTransform` — formal
+#     2×2 deformation-matrix decomposition. The least-squares fit here is
+#     numerically equivalent but does not construct an AffineTransform
+#     object. A future refactor that unifies the strain math with ptycho
+#     positional refinement could route both through AffineTransform.
 from quantem.widget.json_state import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.tool_parity import (
     bind_tool_runtime_api,
