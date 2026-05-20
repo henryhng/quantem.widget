@@ -697,7 +697,9 @@ class SpectrumImage(anywidget.AnyWidget):
         e_min = self.bg_e_min if e_min is None else float(e_min)
         e_max = self.bg_e_max if e_max is None else float(e_max)
         start, stop = self._window_indices(e_min, e_max)
-        if stop - start < 2:
+        # Require at least 5 points to match exspy's default minimum window;
+        # 2 points trivially fit a line with zero residual.
+        if stop - start < 5:
             self._bg_fit_A = 0.0
             self._bg_fit_r = 0.0
             self.bg_params = [0.0, 0.0]
@@ -707,14 +709,28 @@ class SpectrumImage(anywidget.AnyWidget):
 
         e_fit = self._energy_axis[start:stop]
         if not np.all(e_fit > 0):
-            # Shift to keep E > 0; otherwise log undefined. Use small offset.
-            shift = max(0.0, -float(e_fit.min())) + 1.0
-            e_fit_shifted = e_fit + shift
-            full_axis = self._energy_axis + shift
-        else:
-            shift = 0.0
-            e_fit_shifted = e_fit
-            full_axis = self._energy_axis
+            # The reported (A, r) only refer to the original `I = A·E^-r` model
+            # when E > 0 across the fit window. For EELS/EDS that holds in
+            # practice (energy is positive); if the user passes a custom axis
+            # whose fit window includes E ≤ 0 we refuse the fit and emit a
+            # warning rather than silently fitting in a shifted coordinate
+            # system whose `A = exp(intercept)` does not refer to original E.
+            import warnings
+            warnings.warn(
+                "Power-law background fit requires E > 0 across the window; "
+                f"got E_min={float(e_fit.min())}. Skipping fit; bg_params=(0,0).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._bg_fit_A = 0.0
+            self._bg_fit_r = 0.0
+            self.bg_params = [0.0, 0.0]
+            self._bg_curve = np.zeros(self.n_energy, dtype=np.float32)
+            self._bg_fit_window = (e_min, e_max)
+            return (0.0, 0.0)
+
+        e_fit_shifted = e_fit
+        full_axis = self._energy_axis
 
         log_e = np.log(e_fit_shifted).astype(np.float64)
         # Flat (n_pixels, n_e_fit) of intensities; clamp to >0 for log
