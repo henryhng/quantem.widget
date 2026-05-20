@@ -14,6 +14,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from quantem.widget.align2d import Align2D
     from quantem.widget.align2d_bulk import Align2DBulk
     from quantem.widget.array_utils import bin2d
+    from quantem.widget.atom_finder import AtomFinder
     from quantem.widget.bin import Bin, Bin4D
     from quantem.widget.bin2d import Bin2D
     from quantem.widget.browse import Browse
@@ -36,6 +37,7 @@ if TYPE_CHECKING:  # pragma: no cover
 _EXPORTS = {
     "Align2D": ("quantem.widget.align2d", "Align2D"),
     "Align2DBulk": ("quantem.widget.align2d_bulk", "Align2DBulk"),
+    "AtomFinder": ("quantem.widget.atom_finder", "AtomFinder"),
     "bin2d": ("quantem.widget.array_utils", "bin2d"),
     "Bin": ("quantem.widget.bin", "Bin"),
     "Bin4D": ("quantem.widget.bin", "Bin4D"),
@@ -77,6 +79,7 @@ def __dir__() -> list[str]:
 __all__ = [
     "Align2D",
     "Align2DBulk",
+    "AtomFinder",
     "bin2d",
     "Bin",
     "Bin2D",
