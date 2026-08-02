@@ -475,3 +475,120 @@ def test_showdiffraction_detect_rings():
     assert len(found) >= 3
     for target in ring_radii:
         assert any(abs(f - target) < 3 for f in found)
+
+
+def _speckled_lattice(size=128, seed=0):
+    """Bragg lattice plus shot-noise speckle, the case TV is meant to help."""
+    rng = np.random.default_rng(seed)
+    center = (size - 1) / 2
+    rows, cols = np.mgrid[0:size, 0:size]
+    dp = np.zeros((size, size), np.float32)
+    for h in range(-2, 3):
+        for k in range(-2, 3):
+            amplitude = 4.0 if h == 0 and k == 0 else 1.0
+            dp += amplitude * np.exp(
+                -(((rows - center - h * 22) ** 2 + (cols - center - k * 22) ** 2) / 8.0)
+            )
+    return (dp + 0.3 * rng.random((size, size))).astype(np.float32)
+
+
+def test_showdiffraction_denoise_is_view_only():
+    """Denoise is a view stage: the widget still ships raw counts
+    and every measurement path reads them, so spot picks are unchanged."""
+    pytest.importorskip("denova")
+    dp = _speckled_lattice(size=48)
+    center = (dp.shape[0] - 1) / 2
+
+    filtered = ShowDiffraction(dp, center=(center, center), denoise="denova_tv", verbose=False)
+    assert filtered.denoise == "denova_tv"
+
+    # the shipped frame is filtered, but every measurement path reads raw counts
+    np.testing.assert_array_equal(filtered._displayed_frame(), dp)
+
+    raw = ShowDiffraction(dp, center=(center, center), verbose=False)
+    filtered.detect_spots(max_spots=8)
+    raw.detect_spots(max_spots=8)
+    assert [(s["row"], s["col"]) for s in filtered.spots] == [(s["row"], s["col"]) for s in raw.spots]
+
+
+def test_showdiffraction_denoise_defaults_off_and_rejects_unknown_modes():
+    dp = _speckled_lattice(size=64)
+    assert ShowDiffraction(dp, verbose=False).denoise == "none"
+    assert ShowDiffraction(dp, denoise="off", verbose=False).denoise == "none"
+    with pytest.raises(Exception):
+        ShowDiffraction(dp, denoise="wavelet", verbose=False)
+
+
+def test_showdiffraction_bakes_what_the_kernel_can_filter():
+    """Anything the kernel can evaluate is baked before transport and flagged so
+    the browser leaves it alone; the raw frame stays available for measurement."""
+    pytest.importorskip("denova")
+    dp = _speckled_lattice(size=48)
+
+    baked = ShowDiffraction(dp, denoise="denova_tv", verbose=False)
+    shipped = np.frombuffer(baked.frame_bytes, dtype=np.float32).reshape(dp.shape)
+    assert not np.array_equal(shipped, dp)
+    assert baked.denoise_baked
+    np.testing.assert_array_equal(baked._displayed_frame(), dp)
+
+    off = ShowDiffraction(dp, verbose=False)
+    assert not off.denoise_baked
+    np.testing.assert_array_equal(
+        np.frombuffer(off.frame_bytes, dtype=np.float32).reshape(dp.shape), dp
+    )
+
+
+def test_showdiffraction_denova_mode_denoises_and_leaves_counts_alone():
+    """The denova solver runs through the same view stage as every other mode:
+    the shipped frame is filtered and flagged, raw counts stay for measurement."""
+    pytest.importorskip("denova")
+    dp = _speckled_lattice(size=48)
+
+    widget = ShowDiffraction(dp, denoise="denova_tv", verbose=False)
+    shipped = np.frombuffer(widget.frame_bytes, dtype=np.float32).reshape(dp.shape)
+    assert widget.denoise_baked
+    assert not np.array_equal(shipped, dp)
+
+    def variation(a):
+        return np.abs(np.diff(a, axis=1)).sum()
+
+    assert variation(shipped) < 0.7 * variation(dp)
+    np.testing.assert_array_equal(widget._displayed_frame(), dp)
+
+
+def test_showdiffraction_missing_denoise_backend_falls_back_to_raw(monkeypatch):
+    """Where a backend is unavailable the viewer shows raw counts with a warning
+    rather than blanking, and leaves the frame unflagged so the browser can try."""
+    import quantem.widget.showdiffraction as module
+
+    def unavailable(*args, **kwargs):
+        raise ImportError("backend missing")
+
+    monkeypatch.setattr(module, "apply_display_filter", unavailable)
+    dp = _speckled_lattice(size=64)
+
+    with pytest.warns(RuntimeWarning, match="unavailable"):
+        widget = ShowDiffraction(dp, denoise="denova_tv12", verbose=False)
+    assert not widget.denoise_baked
+    shipped = np.frombuffer(widget.frame_bytes, dtype=np.float32).reshape(dp.shape)
+    np.testing.assert_array_equal(shipped, dp)
+
+
+def test_showdiffraction_denoise_knob_change_repacks_the_frame():
+    pytest.importorskip("denova")
+    dp = _speckled_lattice(size=48)
+    widget = ShowDiffraction(dp, verbose=False)
+    before = widget.frame_bytes
+    widget.denoise = "denova_tv"
+    assert widget.frame_bytes != before
+    widget.denoise = "none"
+    assert widget.frame_bytes == before
+
+
+def test_showdiffraction_rejects_non_denova_denoise_modes():
+    """The menu is denova's solvers; the gaussian/anscombe family belongs to the
+    sparse-count-map viewers, not to diffraction."""
+    dp = _speckled_lattice(size=48)
+    for mode in ("gaussian", "anscombe", "tv"):
+        with pytest.raises(Exception):
+            ShowDiffraction(dp, denoise=mode, verbose=False)

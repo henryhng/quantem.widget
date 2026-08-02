@@ -23,11 +23,22 @@ import { drawScaleBarHiDPI, drawColorbar } from "../figure";
 import { extractBytes, extractFloat32, formatNumber, downloadBlob, preserveRestoredWidgetModelsOnSave } from "../format";
 import { computeHistogramFromBytes, findDataRange, sliderRange, applyLogScaleInPlace } from "../stats";
 import { COLORMAPS, COLORMAP_NAMES, applyColormap } from "../colormaps";
+import { denovaDenoiseBrowser } from "../denovaDenoise";
 import { MetadataSection } from "../widgetInfo";
 
 // ============================================================================
 // Style tokens
 // ============================================================================
+
+// denova's four 2D solvers. Python bakes them; where it has no GPU the frame
+// ships raw and the WebGPU driver picks them up.
+const DENOISE_MODES: [string, string][] = [
+  ["none", "None"],
+  ["denova_tv", "TV"],
+  ["denova_tv2", "TV2"],
+  ["denova_tv12", "TV1-2"],
+  ["denova_tikhonov", "Tikhonov"],
+];
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 10;
@@ -306,6 +317,8 @@ function ShowDiffraction() {
   const [, setRingRemoveRequest] = useModelState<number>("_ring_remove_request");
   const [dpColormap, setDpColormap] = useModelState<string>("dp_colormap");
   const [dpScaleMode, setDpScaleMode] = useModelState<string>("dp_scale_mode");
+  const [denoise, setDenoise] = useModelState<string>("denoise");
+  const [denoiseBaked] = useModelState<boolean>("denoise_baked");
   const [dpInvert, setDpInvert] = useModelState<boolean>("dp_invert");
   const [dpVminPct, setDpVminPct] = useModelState<number>("dp_vmin_pct");
   const [dpVmaxPct, setDpVmaxPct] = useModelState<number>("dp_vmax_pct");
@@ -478,9 +491,40 @@ function ShowDiffraction() {
     return extractFloat32(frameBytes, frameLen);
   }, [offline, offlineFrames, frameBytes, frameIdx, nFrames, detRows, detCols]);
 
+  // Display-only denoise between the raw frame and the scale pass. WebGPU makes
+  // it async, so a generation token drops a stale result when the frame or the
+  // knobs change mid-flight. Measurement keeps using the raw counts.
+  const [denoisedFrame, setDenoisedFrame] = React.useState<Float32Array | null>(null);
+  const denoiseGenerationRef = React.useRef(0);
+  React.useEffect(() => {
+    const generation = ++denoiseGenerationRef.current;
+    // denoiseBaked means the kernel already filtered it; the browser only steps
+    // in for the denova modes when Python had no CUDA/MPS device to run them on
+    const isDenova = denoise !== "none";
+    if (denoiseBaked || !isDenova || !activeFrame || activeFrame.length === 0) {
+      setDenoisedFrame(null);
+      return;
+    }
+    denovaDenoiseBrowser(
+      activeFrame,
+      detCols,
+      detRows,
+      denoise === "denova_tv12" ? "tv12" : denoise === "denova_tv2" ? "tv2" : "tv",
+    )
+      .then((result) => {
+        if (generation === denoiseGenerationRef.current) setDenoisedFrame(result);
+      })
+      .catch((err) => {
+        console.warn("[ShowDiffraction] denoise failed; showing the raw frame", err);
+        if (generation === denoiseGenerationRef.current) setDenoisedFrame(null);
+      });
+  }, [activeFrame, denoise, denoiseBaked, detRows, detCols]);
+
+  const viewFrame = denoisedFrame ?? activeFrame;
+
   // Render the frame: scale then colormap
   React.useEffect(() => {
-    const raw = activeFrame;
+    const raw = viewFrame;
     if (!raw || raw.length === 0) return;
     let scaled: Float32Array;
     if (dpScaleMode === "log") {
@@ -509,7 +553,7 @@ function ShowDiffraction() {
     ctx.putImageData(imgData, 0, 0);
     setDpHistData(scaled);
     setDpVersion(v => v + 1);
-  }, [activeFrame, dpLut, dpScaleMode, dpVminPct, dpVmaxPct, detRows, detCols]);
+  }, [viewFrame, dpLut, dpScaleMode, dpVminPct, dpVmaxPct, detRows, detCols]);
 
   // Draw the rendered frame with zoom and pan
   React.useLayoutEffect(() => {
@@ -900,6 +944,12 @@ function ShowDiffraction() {
                 <MenuItem value="linear" sx={{ fontSize: 10 }}>Linear</MenuItem>
                 <MenuItem value="log" sx={{ fontSize: 10 }}>Log</MenuItem>
                 <MenuItem value="sqrt" sx={{ fontSize: 10 }}>Sqrt</MenuItem>
+              </Select>
+              <Typography sx={{ ...typography.label, fontSize: 10 }} title="denova solvers, which pick their own strength from the noise model. TV: piecewise constant, sharpest edges. TV2: smooth ramps. TV1-2: mixed. Tikhonov: smooth everywhere. View only - spot and ring measurements always use the raw counts.">Denoise</Typography>
+              <Select size="small" value={denoise} onChange={(e) => setDenoise(String(e.target.value))} sx={{ ...themedSelect, minWidth: 88 }} MenuProps={themedMenuProps}>
+                {DENOISE_MODES.map(([mode, label]) => (
+                  <MenuItem key={mode} value={mode} sx={{ fontSize: 10 }}>{label}</MenuItem>
+                ))}
               </Select>
               <Typography sx={{ ...typography.label, fontSize: 10 }}>Invert</Typography>
               <Switch size="small" checked={dpInvert} onChange={(_, v) => setDpInvert(v)} sx={switchStyles.small} />

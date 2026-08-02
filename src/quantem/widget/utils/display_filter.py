@@ -31,13 +31,23 @@ DISPLAY_FILTER_MODES = (
     "tv",
     "denova",
     "denova_tv",
+    "denova_tv2",
     "denova_tv12",
+    "denova_tikhonov",
 )
+# The four 2D methods denova implements, keyed by display-filter mode name.
+DENOVA_METHODS = {
+    "denova": "tv",
+    "denova_tv": "tv",
+    "denova_tv2": "tv2",
+    "denova_tv12": "tv12",
+    "denova_tikhonov": "tikhonov",
+}
 # Modes with a browser-side WebGPU/TypeScript port (js/displayFilter.ts).
 # Panels on these modes can ship raw pixels and filter client-side, which
 # keeps the sigma slider live during drag and makes kernel-less offline HTML
-# exports scrubbable. tv and denova* depend on scikit-image / the denova
-# package and are Python-only: those panels always bake their filtered view.
+# exports scrubbable. tv and denova* need scikit-image / the denova package
+# and stay Python-only: those panels always bake their filtered view.
 BROWSER_DISPLAY_FILTER_MODES = (
     "none",
     "gaussian",
@@ -118,6 +128,23 @@ def _bin2(image: np.ndarray, sigma: float | None = None) -> np.ndarray:
     return ndimage.zoom(
         binned, (n_rows / binned.shape[0], n_cols / binned.shape[1]), order=1
     ).astype(np.float32)
+
+
+def tv_weight(image: np.ndarray, sigma: float) -> float:
+    """Absolute TV weight for a sigma slider position.
+
+    ``denoise_tv_chambolle`` measures ``weight`` in the image's own units, so a
+    fixed number cannot serve both a normalized map and raw counts: on a pattern
+    peaking in the hundreds a weight of 0.25 moves pixels by well under one
+    count, which reads as the filter doing nothing at all. Scaling by the 99.5th
+    percentile (the robust scale :func:`_anscombe_gauss` already uses) makes one
+    slider position mean the same denoise strength on any input.
+    """
+    scale = float(np.percentile(np.asarray(image, dtype=np.float64), 99.5))
+    if not np.isfinite(scale) or scale <= 0:
+        scale = 1.0
+    fraction = max(0.002, min(0.05, float(sigma) / 400.0))
+    return fraction * scale
 
 
 def _denova(image: np.ndarray, method: str = "tv") -> np.ndarray:
@@ -240,14 +267,10 @@ def apply_display_filter(
             from skimage.restoration import denoise_tv_chambolle
         except ImportError as exc:
             raise ImportError("display filter 'tv' requires scikit-image") from exc
-        weight = max(0.02, min(0.25, sigma / 50.0))
+        weight = tv_weight(out, sigma)
         return denoise_tv_chambolle(out.astype(np.float64), weight=weight).astype(np.float32)
-    if mode == "denova":
-        return _denova(out, method="tv")
-    if mode == "denova_tv":
-        return _denova(out, method="tv")
-    if mode == "denova_tv12":
-        return _denova(out, method="tv12")
+    if mode in DENOVA_METHODS:
+        return _denova(out, method=DENOVA_METHODS[mode])
     raise ValueError(
         "mode must be one of "
         + "|".join(DISPLAY_FILTER_MODES)

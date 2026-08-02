@@ -11963,9 +11963,9 @@ function Show2D() {
                   {showDenoise && (
                     <Box sx={{ ...controlRow, ...mobileControlRowSx, border: `1px solid ${themeColors.border}`, bgcolor: themeColors.controlBg, opacity: 1, pointerEvents: "auto" }}>
                       <Box sx={controlPairSx}>
-                        <Typography sx={compactLabelSx} title="Poisson (Anscombe): count-respecting smoothing for sparse EDS/counting data - recommended with Bin 2, sigma 6-10. Gaussian: simple smooth for decent-dose images. None: raw counts (use for anything quantitative).">Denoise</Typography>
+                        <Typography sx={compactLabelSx} title="Poisson (Anscombe): count-respecting smoothing for sparse EDS/counting data - recommended with Bin 2, sigma 6-10. Gaussian: simple smooth for decent-dose images. Total variation: edge preserving, keeps sharp interfaces a gaussian would blur. None: raw counts (use for anything quantitative).">Denoise</Typography>
                         <Select size="small" value={denoiseBaseMode} onChange={(e) => { const v = e.target.value; setDisplayFilter(v); mirrorFilterKnobEdit("mode", v); if (resolveDenoiseMode(v).mode !== "none" || (spatialBin || 1) > 1) setDenoiseEnabled(true); }} MenuProps={themedMenuProps} sx={{ ...themedSelect, minWidth: 88 }}>
-                          {[["none", "None"], ["gaussian", "Gaussian"], ["anscombe", "Poisson (Anscombe)"]].map(([mode, label]) => (
+                          {[["none", "None"], ["gaussian", "Gaussian"], ["anscombe", "Poisson (Anscombe)"], ["tv", "Total variation"]].map(([mode, label]) => (
                             <MenuItem key={mode} value={mode}>{label}</MenuItem>
                           ))}
                         </Select>

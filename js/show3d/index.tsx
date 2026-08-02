@@ -20133,9 +20133,9 @@ function Show3D() {
                       <Switch checked={denoiseScopeAll} onChange={() => setDenoiseScope(denoiseScopeAll ? "panel" : "all")} size="small" sx={switchStyles.small} slotProps={{ input: { "aria-label": "Toggle linked denoise settings across panels" } }} />
                     </>
                   )}
-                  <Typography sx={{ ...typography.label, fontSize: 10, color: themeColors.textMuted }} title="Poisson (Anscombe): count-respecting smoothing for sparse EDS/counting data - recommended with Bin 2, sigma 6-10. Gaussian: simple smooth for decent-dose images. None: raw counts (use for anything quantitative).">Denoise</Typography>
+                  <Typography sx={{ ...typography.label, fontSize: 10, color: themeColors.textMuted }} title="Poisson (Anscombe): count-respecting smoothing for sparse EDS/counting data - recommended with Bin 2, sigma 6-10. Gaussian: simple smooth for decent-dose images. Total variation: edge preserving, keeps sharp interfaces a gaussian would blur. None: raw counts (use for anything quantitative).">Denoise</Typography>
                   <Select size="small" value={denoiseKnobsForPanel(scopedPanelForEdit).mode} onChange={(e) => { const value = String(e.target.value); setDisplayFilter(value); syncDenoisePanelKnob("mode", value); if (resolveDenoiseMode(value).mode !== "none" || (denoiseKnobsForPanel(scopedPanelForEdit).bin || 1) > 1) setDenoiseEnabled(true); }} MenuProps={themedMenuProps} sx={{ ...themedSelect, minWidth: 88, fontSize: 10 }} inputProps={{ "aria-label": denoiseScopeAll ? "Display-only denoise method for all panels" : "Display-only denoise method for selected panel" }}>
-                    {[["none", "None"], ["gaussian", "Gaussian"], ["anscombe", "Poisson (Anscombe)"]].map(([mode, label]) => (
+                    {[["none", "None"], ["gaussian", "Gaussian"], ["anscombe", "Poisson (Anscombe)"], ["tv", "Total variation"]].map(([mode, label]) => (
                       <MenuItem key={mode} value={mode}>{label}</MenuItem>
                     ))}
                   </Select>

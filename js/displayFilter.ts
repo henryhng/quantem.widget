@@ -3,9 +3,9 @@
 // src/quantem/widget/utils/display_filter.py (apply_display_filter).
 //
 // Covered modes: none, gaussian, bin2, anscombe, bin2_anscombe, bin4_anscombe,
-// plus the spatial_bin pre-passes. tv and denova* need scikit-image / the
-// denova package and stay on the Python path (the kernel keeps filtering those
-// panels; see Show2D._panel_browser_filtered).
+// plus the spatial_bin pre-passes. tv and denova* need scikit-image / the denova
+// package and stay on the Python path (the kernel keeps filtering those panels;
+// see Show2D._panel_browser_filtered).
 //
 // Two implementations share the same kernel weights, resample coordinates and
 // percentile math:

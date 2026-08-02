@@ -18,6 +18,7 @@ import math
 import pathlib
 import tempfile
 import time
+import warnings
 from typing import Self
 
 import anywidget
@@ -26,6 +27,11 @@ import torch
 import traitlets
 
 from quantem.widget.utils.array import to_numpy
+from quantem.widget.utils.display_filter import (
+    DENOVA_METHODS,
+    _normalize_mode,
+    apply_display_filter,
+)
 from quantem.widget.export import ensure_mobile_viewport
 from quantem.widget.utils.state_io import resolve_widget_version, save_state_file, unwrap_state_payload
 from quantem.widget.utils.ui import UiMode, resolve_ui_mode
@@ -34,6 +40,10 @@ from quantem.widget.utils.ui import UiMode, resolve_ui_mode
 # Constants
 # ============================================================================
 DEFAULT_BF_RATIO = 0.125  # BF disk radius as fraction of detector size (1/8)
+# Denoise here is denova's solvers only. The gaussian/anscombe family in
+# display_filter is aimed at sparse count maps (Show2D/Show3D); for diffraction
+# the point is edge preservation, which is exactly what denova solves for.
+DENOISE_MODES = ("none", *DENOVA_METHODS)
 
 
 class ShowDiffraction(anywidget.AnyWidget):
@@ -192,6 +202,16 @@ class ShowDiffraction(anywidget.AnyWidget):
     dp_invert = traitlets.Bool(False).tag(sync=True)
     dp_vmin_pct = traitlets.Float(0.0).tag(sync=True)
     dp_vmax_pct = traitlets.Float(100.0).tag(sync=True)
+    # Display-only denoise, applied in the browser between the raw frame and
+    # the scale/colormap pass (js/denoise.ts). Speckly low-dose patterns hide
+    # weak spots; TV smooths them while keeping disk edges sharp. Measurement
+    # stays on raw counts: detect_spots/detect_rings and every export read
+    # _displayed_frame(), which this never touches.
+    denoise = traitlets.Enum(list(DENOISE_MODES), default_value="none").tag(sync=True)
+    # True when the shipped frame is already filtered, so the browser leaves it
+    # alone. denova modes need a CUDA/MPS GPU here; where that is missing the
+    # frame ships raw and the WebGPU driver (js/denovaDenoise.ts) has a go.
+    denoise_baked = traitlets.Bool(False).tag(sync=True)
 
     # =========================================================================
     # Statistics
@@ -244,6 +264,7 @@ class ShowDiffraction(anywidget.AnyWidget):
         snap_radius: int = 5,
         spot_refine: bool = True,
         dp_scale_mode: str = "log",
+        denoise: str = "none",
         ui_mode: UiMode = "interactive",
         show_title: bool | None = None,
         show_stats: bool | None = None,
@@ -300,6 +321,8 @@ class ShowDiffraction(anywidget.AnyWidget):
 
         self.title = title
         self.dp_scale_mode = dp_scale_mode
+        self._denoise_warned = False
+        self.denoise = _normalize_mode(denoise)
         self.snap_enabled = snap_enabled
         self.snap_radius = snap_radius
         self.spot_refine = spot_refine
@@ -344,7 +367,10 @@ class ShowDiffraction(anywidget.AnyWidget):
         self._update_frame()
         self._bake_offline_frames()
 
-        self.observe(self._update_frame, names=["frame_idx"])
+        # denoise knobs repack the shipped frame; browser-side modes are a no-op
+        # here because the frame ships raw and the frontend filters it
+        self.observe(self._update_frame, names=["frame_idx", "denoise"])
+        self.observe(self._bake_offline_frames, names=["denoise"])
         self.observe(self._bake_offline_frames, names=["offline"])
         self.observe(self._on_spot_add_request, names=["_spot_add_request"])
         self.observe(self._on_spot_undo_request, names=["_spot_undo_request"])
@@ -477,6 +503,34 @@ class ShowDiffraction(anywidget.AnyWidget):
     def _displayed_frame(self) -> np.ndarray:
         return self._get_frame(self.frame_idx)
 
+    def _for_transport(self, frame: np.ndarray) -> np.ndarray:
+        """Frame as the browser should receive it, filtered where we can.
+
+        Statistics, spot and ring detection and exports all keep reading
+        :meth:`_displayed_frame`, so this stays a view stage.
+        """
+        mode = _normalize_mode(self.denoise)
+        if mode == "none":
+            self.denoise_baked = False
+            return frame
+        try:
+            out = apply_display_filter(frame, mode=mode)
+            self.denoise_baked = True
+            return out
+        except Exception as exc:
+            # a missing optional dependency (scikit-image, denova) or an
+            # unavailable GPU must not blank the viewer
+            if not self._denoise_warned:
+                self._denoise_warned = True
+                warnings.warn(
+                    f"denoise={self.denoise!r} unavailable here ({exc}); the browser "
+                    "will try WebGPU, otherwise raw counts are shown.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            self.denoise_baked = False
+            return frame
+
     def _update_frame(self, change=None):
         frame = self._displayed_frame()
         self.dp_stats = [
@@ -485,12 +539,13 @@ class ShowDiffraction(anywidget.AnyWidget):
             float(frame.max()),
             float(frame.std()),
         ]
-        self.frame_bytes = frame.tobytes()
+        self.frame_bytes = self._for_transport(frame).tobytes()
 
     def _bake_offline_frames(self, change=None) -> None:
         # skip single frames and live widgets (which stream per frame) to avoid bloat
         if self.offline and self.n_frames > 1 and getattr(self, "_data", None) is not None:
             frames = self._data.cpu().numpy().astype(np.float32)
+            frames = np.stack([self._for_transport(f) for f in frames])
             self.offline_frames = np.ascontiguousarray(frames).tobytes()
         else:
             self.offline_frames = b""

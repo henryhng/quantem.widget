@@ -37,6 +37,10 @@ docs/dev/
 # and docs tracked instead.
 show*.html
 docs/tutorials/*.html
+# Notebook-generated media; regenerate with the notebook or
+# scripts/record_denoise_demo.py rather than tracking binaries.
+docs/tutorials/*.mp4
+docs/tutorials/*.webm
 
 # heavy / non-repo content (notebooks are 1.1GB + person/proprietary)
 notebooks/*

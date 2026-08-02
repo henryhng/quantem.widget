@@ -577,3 +577,35 @@ def test_browser_owns_display_filter_by_default():
     # With the default flag the wire frame is the raw frame: no scipy call.
     frame = np.asarray(counts, dtype=np.float32)
     np.testing.assert_array_equal(three_d._wire_frame(frame), frame)
+
+
+def test_tv_and_denova_panels_stay_on_the_python_path():
+    """tv needs scikit-image and denova* need the denova package, so neither has
+    a browser port: those panels always bake their filtered view in the kernel."""
+    from quantem.widget import Show2D
+    from quantem.widget.utils.display_filter import BROWSER_DISPLAY_FILTER_MODES
+
+    assert "tv" not in BROWSER_DISPLAY_FILTER_MODES
+    assert "denova_tv12" not in BROWSER_DISPLAY_FILTER_MODES
+
+    widget = Show2D(_sparse_eds_map(shape=(64, 64)), denoise="tv", denoise_sigma=6, verbose=False)
+    widget._webgpu_filter_ok = True
+    assert not widget._panel_browser_filtered(0)
+
+
+def test_tv_smooths_without_erasing_an_edge():
+    """The ROF model is edge preserving: a noisy step loses most of its total
+    variation while the step height itself survives."""
+    from quantem.widget.utils.display_filter import apply_display_filter
+
+    rng = np.random.default_rng(0)
+    step = (np.mgrid[0:64, 0:64][1] < 32).astype(np.float32) * 5.0
+    noisy = step + rng.normal(0, 0.7, step.shape).astype(np.float32)
+
+    out = apply_display_filter(noisy, mode="tv", sigma=6)
+
+    def variation(a):
+        return np.abs(np.diff(a, axis=1)).sum()
+
+    assert variation(out) < 0.75 * variation(noisy)
+    assert out[:, 5].mean() - out[:, 58].mean() > 4.0
